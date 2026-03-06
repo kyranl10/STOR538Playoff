@@ -2,7 +2,7 @@
 title: "Data Collection and Cleaning"
 author: "Kyran Lakhia"
 date: "`r Sys.Date()`"
-output: html_document
+output: pdf_document
 ---
 #Initial Cleaning
 ```{r setup, include=FALSE}
