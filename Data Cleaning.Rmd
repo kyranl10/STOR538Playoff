@@ -15,20 +15,20 @@ library(readr)
 library(dplyr)
 library(tibble)
 library(lubridate)
+library(zoo)
+library(tidyr)
 ```
 
 Read Raw Data
 ```{r}
-games      <- read_csv("Games.csv", show_col_types = FALSE)
-opp_pg     <- read_csv("Opponent Stats Per Game.csv", show_col_types = FALSE)
-adv        <- read_csv("Advanced.csv", show_col_types = FALSE)
+games <- read_csv("Games.csv", show_col_types = FALSE)
+opp_pg <- read_csv("Opponent Stats Per Game.csv", show_col_types = FALSE)
 ```
 
 Inspect Column Names
 ```{r}
 names(games)
 names(opp_pg)
-names(adv)
 ```
 
 Historical Base Dataset
@@ -179,7 +179,7 @@ team_stats <- read_csv("TeamStatistics.csv", show_col_types = FALSE)
 ```{r}
 names(team_stats)
 ```
-Building Offensive Rebound Datasetr
+Building Offensive Rebound Dataset
 ```{r}
 oreb_game <- team_stats %>%
   select(
@@ -195,20 +195,22 @@ Splitting Into Home and Away
 # Home Offensive Rebounds
 
 home_oreb <- oreb_game %>%
-  filter(home == TRUE) %>%
+  filter(home == 1) %>%
   select(
     game_id,
+    home_team = team,
     home_oreb = oreb
-  )
-
-# Away Offensive Rebounds
+  ) %>%
+  mutate(game_id = as.character(game_id))
 
 away_oreb <- oreb_game %>%
-  filter(home == FALSE) %>%
+  filter(home == 0) %>%
   select(
     game_id,
+    away_team = team,
     away_oreb = oreb
-  )
+  ) %>%
+  mutate(game_id = as.character(game_id))
 ```
 
 Joining Onto Master
@@ -216,8 +218,10 @@ Joining Onto Master
 ## Join Offensive Rebounds onto Master Dataset
 
 games_master <- games_master %>%
-  left_join(home_oreb, by = "game_id") %>%
-  left_join(away_oreb, by = "game_id") %>%
+  select(-any_of(c("home_oreb", "away_oreb", "oreb"))) %>%
+  mutate(game_id = as.character(game_id)) %>%
+  left_join(home_oreb, by = c("game_id", "home_team")) %>%
+  left_join(away_oreb, by = c("game_id", "away_team")) %>%
   mutate(
     oreb = home_oreb + away_oreb
   )
@@ -283,7 +287,6 @@ off_col  <- pick_col(team_adv, c("offensiveRating", "offRating", "off_rtg"))
 def_col  <- pick_col(team_adv, c("defensiveRating", "defRating", "def_rtg"))
 net_col  <- pick_col(team_adv, c("netRating", "net_rtg"))
 pace_col <- pick_col(team_adv, c("pace"))
-ts_col   <- pick_col(team_adv, c("trueShootingPercentage", "trueShootingPct", "tsPercent", "ts_percentage"))
 
 game_id_col
 home_col
@@ -291,19 +294,6 @@ off_col
 def_col
 net_col
 pace_col
-ts_col
-```
-Reduced
-```{r}
-team_adv_small <- team_adv %>%
-  transmute(
-    game_id = .data[[game_id_col]],
-    home    = .data[[home_col]],
-    off_rtg = .data[[off_col]],
-    def_rtg = .data[[def_col]],
-    net_rtg = .data[[net_col]],
-    pace    = .data[[pace_col]]
-  )
 ```
 
 Game_ids cleaning
@@ -507,7 +497,7 @@ library(zoo)
 
 Team-Level Game History
 ```{r}
-team_games_home <- games_master %>%
+team_games_roll_home <- games_master %>%
   select(
     game_id,
     date,
@@ -517,7 +507,7 @@ team_games_home <- games_master %>%
     oreb = home_oreb
   )
 
-team_games_away <- games_master %>%
+team_games_roll_away <- games_master %>%
   select(
     game_id,
     date,
@@ -527,14 +517,14 @@ team_games_away <- games_master %>%
     oreb = away_oreb
   )
 
-team_games <- bind_rows(team_games_home, team_games_away) %>%
+team_games_roll <- bind_rows(team_games_roll_home, team_games_roll_away) %>%
   mutate(date = as.Date(date)) %>%
   arrange(team, date, game_id)
 ```
 
 Computing Rolling Features
 ```{r}
-team_games <- team_games %>%
+team_games_roll <- team_games_roll %>%
   group_by(team) %>%
   arrange(date, game_id, .by_group = TRUE) %>%
   mutate(
@@ -547,7 +537,7 @@ team_games <- team_games %>%
 
 Home Rolling Stats
 ```{r}
-home_recent <- team_games %>%
+home_recent <- team_games_roll %>%
   select(
     game_id,
     team,
@@ -565,7 +555,7 @@ home_recent <- team_games %>%
 
 Away Rolling Stats
 ```{r}
-away_recent <- team_games %>%
+away_recent_roll <- team_games_roll %>%
   select(
     game_id,
     team,
@@ -590,7 +580,7 @@ games_master <- games_master %>%
     "home_last5_oreb", "away_last5_oreb", "last5_oreb_diff"
   ))) %>%
   left_join(home_recent, by = c("game_id", "home_team")) %>%
-  left_join(away_recent, by = c("game_id", "away_team")) %>%
+  left_join(away_recent_roll, by = c("game_id", "away_team")) %>%
   mutate(
     last5_pts_diff = home_last5_pts - away_last5_pts,
     last5_pts_allowed_diff = home_last5_pts_allowed - away_last5_pts_allowed,
@@ -627,28 +617,28 @@ write_csv(games_master_modern, "master_dataset_modern_v5.csv")
 #Schedule Factors
 Building Team Level Schedule
 ```{r}
-team_games_home <- games_master %>%
+team_games_rest_home <- games_master %>%
   select(
     game_id,
     date,
     team = home_team
   )
 
-team_games_away <- games_master %>%
+team_games_rest_away <- games_master %>%
   select(
     game_id,
     date,
     team = away_team
   )
 
-team_games <- bind_rows(team_games_home, team_games_away) %>%
+team_games_rest <- bind_rows(team_games_rest_home, team_games_rest_away) %>%
   mutate(date = as.Date(date)) %>%
   arrange(team, date, game_id)
 ```
 
 Days Since Last Game
 ```{r}
-team_games <- team_games %>%
+team_games_rest <- team_games_rest %>%
   group_by(team) %>%
   arrange(date, .by_group = TRUE) %>%
   mutate(
@@ -659,7 +649,7 @@ team_games <- team_games %>%
 
 Back-to-Back Indictator
 ```{r}
-team_games <- team_games %>%
+team_games_rest <- team_games_rest %>%
   mutate(
     back_to_back = if_else(rest_days == 1, 1, 0)
   )
@@ -667,7 +657,7 @@ team_games <- team_games %>%
 
 Split Home vs Away Rest
 ```{r}
-home_rest <- team_games %>%
+home_rest <- team_games_rest %>%
   rename(home_team = team) %>%
   select(
     game_id,
@@ -676,7 +666,7 @@ home_rest <- team_games %>%
     home_back_to_back = back_to_back
   )
 
-away_rest <- team_games %>%
+away_rest <- team_games_rest %>%
   rename(away_team = team) %>%
   select(
     game_id,
@@ -820,11 +810,32 @@ write_csv(games_master, "master_dataset_v7.csv")
 write_csv(games_master_modern, "master_dataset_modern_v7.csv")
 ```
 
-#Final Edits
+
+##Fixes
+
+Removing Preseason
 ```{r}
-names(games_master_modern)
+games_master <- games_master %>%
+  filter(!(month(date) == 10 & day(date) < 18))
 ```
-Selecting Variabels
+
+Only NBA
+```{r}
+nba_teams <- team_lookup$short_team
+
+games_master <- games_master %>%
+  filter(home_team %in% nba_teams,
+         away_team %in% nba_teams)
+```
+
+Removing games w/o full history
+```{r}
+games_master_modern <- games_master %>%
+  filter(season >= 2010) %>%
+  filter(!is.na(home_last5_pts), !is.na(away_last5_pts))
+```
+
+Rebuilding Final Model Dataset
 ```{r}
 model_data <- games_master_modern %>%
   select(
@@ -857,18 +868,83 @@ model_data <- games_master_modern %>%
     last5_pts_allowed_diff,
     last5_oreb_diff,
 
-    last5_off_rtg_diff,
-    last5_def_rtg_diff,
-    last5_net_rtg_diff,
-    last5_pace_diff,
-
     rest_diff,
     home_back_to_back,
     away_back_to_back
-  )
+  ) %>%
+  tidyr::replace_na(list(
+    rest_diff = 0,
+    home_back_to_back = 0,
+    away_back_to_back = 0
+  )) %>%
+  drop_na(spread, total)
 ```
 
-Save
+Final Save
 ```{r}
 write_csv(model_data, "FINAL_CLEANED_SET.csv")
 ```
+
+##Additional Fixes
+
+Loading
+```{r}
+model_data_v2 <- read_csv("FINAL_CLEANED_SET.csv", show_col_types = FALSE)
+```
+
+Inspecting Month Distribution
+```{r}
+model_data_v2 %>%
+  mutate(
+    date = as.Date(date),
+    month = month(date)
+  ) %>%
+  count(month)
+```
+
+Normal NBA Szn Window
+```{r}
+model_data_v2 <- model_data_v2 %>%
+  mutate(date = as.Date(date)) %>%
+  filter(month(date) %in% c(10, 11, 12, 1, 2, 3, 4))
+```
+
+Removing Weak Variables
+```{r}
+model_data_v2 <- model_data_v2 %>%
+  select(
+    -any_of(c(
+      "off_rtg_diff",
+      "def_rtg_diff",
+      "net_rtg_diff",
+      "pace_diff",
+      "efg_pct_diff",
+      "tov_pct_diff",
+      "orb_pct_diff",
+      "ft_rate_diff"
+    ))
+  ) %>%
+  drop_na()
+```
+
+Verify
+```{r}
+dim(model_data_v2)
+
+colSums(is.na(model_data_v2))
+
+sum(duplicated(model_data_v2$game_id))
+
+model_data_v2 %>%
+  mutate(month = month(date)) %>%
+  count(month)
+
+summary(model_data_v2$spread)
+summary(model_data_v2$total)
+summary(model_data_v2$oreb)
+```
+Save
+```{r}
+write_csv(model_data_v2, "FINAL_CLEANED_SET_v2.csv")
+```
+
