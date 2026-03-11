@@ -36,7 +36,11 @@ library(corrplot)
 
 ```{r}
 model_ready <- read_csv("Data/FINAL_MODEL_READY.csv", show_col_types = FALSE) |>
-  filter(game_date >= as.Date("2013-10-01"))
+  mutate(game_date = as.Date(game_date)) |>
+  filter(
+    game_date >= as.Date("2013-10-01"),
+    month(game_date) %in% c(10, 11, 12, 1, 2, 3, 4)
+  )
 
 cat("Total rows:", nrow(model_ready), "\n")
 cat("Date range:", as.character(min(model_ready$game_date)),
@@ -90,18 +94,84 @@ cat("Test set:    ", nrow(test),  "games (",
 ## Feature matrix
 
 ```{r}
+id_cols <- c("game_id", "game_date", "home_team", "away_team", "total", "oreb")
 
-id_cols  <- c("gameId", "game_date", "home_team", "away_team", "gameType", "total")
+numeric_data <- model_ready |>
+  select(where(is.numeric)) |>
+  select(-any_of(c("total", "oreb")))
+
+# remove zero-variance columns first
+zero_var <- names(numeric_data)[sapply(
+  numeric_data,
+  function(x) var(x, na.rm = TRUE) == 0 | all(is.na(x))
+)]
+
+if (length(zero_var) > 0) {
+  cat("Dropping zero-variance columns:\n")
+  print(zero_var)
+  numeric_data <- numeric_data |>
+    select(-all_of(zero_var))
+}
+
+# remove obvious collinear / redundant variables before VIF
+drop_for_vif <- c(
+  "blend_total_proj5",
+  "rebound_matchup_edge",
+  "orb_pg_diff",
+  "drb_pg_diff",
+  "trb_pg_diff",
+  "x3pa_rate_pg_diff"
+)
+
+vif_vars <- setdiff(names(numeric_data), drop_for_vif)
+
+lm_test <- lm(
+  total ~ .,
+  data = model_ready |>
+    select(total, all_of(vif_vars))
+)
+
+aliased <- alias(lm_test)$Complete
+if (!is.null(aliased)) {
+  cat("Aliased coefficients detected. Remove some of these variables:\n")
+  print(aliased)
+}
+
+keep_coef <- names(coef(lm_test))[!is.na(coef(lm_test))]
+keep_coef <- setdiff(keep_coef, "(Intercept)")
+
+lm_test_vif <- lm(
+  as.formula(paste("total ~", paste(keep_coef, collapse = " + "))),
+  data = model_ready |>
+    select(total, all_of(keep_coef))
+)
+
+cat("VIF values:\n")
+print(car::vif(lm_test_vif))
+
+# final predictor set for modeling
 feat_cols <- setdiff(names(model_ready), id_cols)
+
+# drop collinear / redundant vars from actual models too
+feat_drop <- c(
+  "blend_total_proj5",
+  "rebound_matchup_edge",
+  "orb_pg_diff",
+  "drb_pg_diff",
+  "trb_pg_diff",
+  "x3pa_rate_pg_diff"
+)
+
+feat_cols <- setdiff(feat_cols, feat_drop)
 
 cat("Number of predictors:", length(feat_cols), "\n")
 cat("Predictors:\n")
 print(feat_cols)
 
-X_train <- train[, feat_cols]
+X_train <- train[, feat_cols, drop = FALSE]
 y_train <- train$total
 
-X_test  <- test[, feat_cols]
+X_test  <- test[, feat_cols, drop = FALSE]
 y_test  <- test$total
 
 y_train_log <- log(y_train)
@@ -115,27 +185,16 @@ if (any(na_counts > 0)) {
   cat("No NAs in training feature matrix.\n")
 }
 
-numeric_data <- model_ready |>
-  select(where(is.numeric)) |>
-  select(-total)
-cor_matrix <- cor(numeric_data, use = "complete.obs")
-round(cor_matrix, 2)
+cor_matrix <- cor(X_train |> select(where(is.numeric)), use = "complete.obs")
 corrplot(cor_matrix, method = "color", type = "upper")
-cor_with_total <- sapply(numeric_data, function(x)
-  cor(model_ready$total, x, use = "complete.obs"))
 
-sort(abs(cor_with_total), decreasing = TRUE)
-
-vif_vars <- setdiff(names(numeric_data),
-                    c("three_point_env5", "free_throw_env5", "tov_env5"))
-
-lm_test <- lm(
-  total ~ .,
-  data = model_ready |>
-    select(total, all_of(vif_vars))
+cor_with_total <- sapply(
+  X_train |> select(where(is.numeric)),
+  function(x) cor(y_train, x, use = "complete.obs")
 )
 
-vif(lm_test)
+cat("Top correlations with total:\n")
+print(sort(abs(cor_with_total), decreasing = TRUE))
 
 ```
 ## Cross-validation
@@ -185,11 +244,8 @@ o l s l o l
 ### Full Model 1
 
 ```{r}
-xvars_full <- setdiff(names(X_train),
-                      c("three_point_env5", "free_throw_env5", "tov_env5"))
-
-lm_full <- lm(total ~ ., data = cbind(total = y_train, X_train[, xvars_full]))
-lm_full_pred <- predict(lm_full, newdata = X_test[, xvars_full])
+lm_full <- lm(total ~ ., data = cbind(total = y_train, X_train))
+lm_full_pred <- predict(lm_full, newdata = X_test)
 lm_full_mae  <- mae_raw(y_test, lm_full_pred)
 
 cat("OLS Full Model — Test MAE:", round(lm_full_mae, 2), "\n")
@@ -200,16 +256,15 @@ if (requireNamespace("car", quietly = TRUE)) {
   cat("\nPredictors with VIF > 10 (multicollinearity concern):\n")
   print(vif_vals[vif_vals > 10])
 }
+
 ```
 
 ### Pruned OLS Model 1
 ```{r}
 pruned_vars <- c(
-  "blend_total_proj5",
   "pace_pressure5",
   "shooting_env5",
   "spread",
-  "oreb",
   "rest_diff",
   "home_back_to_back",
   "away_back_to_back",
@@ -220,13 +275,26 @@ pruned_vars <- c(
   "opp_orb_allowed_diff",
   "opp_trb_allowed_diff",
   "opp_ast_allowed_diff",
-  "opp_tov_forced_diff"
+  "opp_tov_forced_diff",
+  "expected_oreb_pressure",
+  "last5_missed_fg_diff",
+  "last10_oreb_diff",
+  "last5_oreb_allowed_diff",
+  "pace_rebound_pressure",
+  "orb_per100_diff",
+  "drb_per100_diff",
+  "trb_per100_diff",
+  "x3pa_rate_per100_diff"
 )
 
-lm_pruned <- lm(total ~ .,
-                data = cbind(total = y_train,
-                             X_train[, pruned_vars]))
-lm_pruned_pred <- predict(lm_pruned, newdata = X_test[, pruned_vars])
+pruned_vars <- pruned_vars[pruned_vars %in% names(X_train)]
+
+lm_pruned <- lm(
+  total ~ .,
+  data = cbind(total = y_train, X_train[, pruned_vars, drop = FALSE])
+)
+
+lm_pruned_pred <- predict(lm_pruned, newdata = X_test[, pruned_vars, drop = FALSE])
 lm_pruned_mae  <- mae_raw(y_test, lm_pruned_pred)
 
 cat("OLS Pruned Model — Test MAE:", round(lm_pruned_mae, 2), "\n")
@@ -236,45 +304,88 @@ print(summary(lm_pruned))
 
 ### OLS on Log-Transformed Total Model 1
 ```{r}
-lm_log <- lm(log(total) ~ .,
-             data = cbind(total = y_train_log,
-                          X_train[, pruned_vars]))
-lm_log_pred_log <- predict(lm_log, newdata = X_test[, pruned_vars])
+lm_log <- lm(
+  log(total) ~ .,
+  data = cbind(total = y_train, X_train[, pruned_vars, drop = FALSE])
+)
+
+lm_log_pred_log <- predict(lm_log, newdata = X_test[, pruned_vars, drop = FALSE])
 lm_log_pred_raw <- exp(lm_log_pred_log)
 lm_log_mae      <- mae_raw(y_test, lm_log_pred_raw)
 
 cat("OLS Log-Transformed — Test MAE (back-transformed):", round(lm_log_mae, 2), "\n")
+
 ```
 
 
 
 ## Model 2: Polynomial Regression
 ```{r}
-poly_vars_linear <- setdiff(
-  pruned_vars,
-  c("blend_total_proj5", "pace_pressure5", "shooting_env5")
+poly_base_vars <- intersect(
+  c(
+    "spread",
+    "rest_diff",
+    "last5_pts_diff",
+    "last5_pts_allowed_diff",
+    "last5_oreb_diff",
+    "opp_pts_allowed_diff",
+    "opp_orb_allowed_diff",
+    "expected_oreb_pressure",
+    "rebound_matchup_edge",
+    "last5_missed_fg_diff",
+    "last5_oreb_allowed_diff",
+    "pace_rebound_pressure"
+  ),
+  names(X_train)
 )
 
-train_poly <- cbind(
-  total = y_train,
-  X_train[, poly_vars_linear, drop = FALSE],
-  poly(X_train$blend_total_proj5, 2, raw = TRUE) |>
-    as.data.frame() |> setNames(c("blend5_d1", "blend5_d2")),
-  poly(X_train$pace_pressure5, 2, raw = TRUE) |>
-    as.data.frame() |> setNames(c("pace5_d1", "pace5_d2")),
-  poly(X_train$shooting_env5, 2, raw = TRUE) |>
-    as.data.frame() |> setNames(c("shoot5_d1", "shoot5_d2"))
+poly_terms <- intersect(
+  c("blend_total_proj5", "pace_pressure5", "shooting_env5"),
+  names(X_train)
 )
 
-test_poly <- cbind(
-  X_test[, poly_vars_linear, drop = FALSE],
-  poly(X_test$blend_total_proj5, 2, raw = TRUE) |>
-    as.data.frame() |> setNames(c("blend5_d1", "blend5_d2")),
-  poly(X_test$pace_pressure5, 2, raw = TRUE) |>
-    as.data.frame() |> setNames(c("pace5_d1", "pace5_d2")),
-  poly(X_test$shooting_env5, 2, raw = TRUE) |>
-    as.data.frame() |> setNames(c("shoot5_d1", "shoot5_d2"))
-)
+train_poly <- cbind(total = y_train, X_train[, poly_base_vars, drop = FALSE])
+test_poly  <- X_test[, poly_base_vars, drop = FALSE]
+
+if ("blend_total_proj5" %in% poly_terms) {
+  train_poly <- cbind(
+    train_poly,
+    poly(X_train$blend_total_proj5, 2, raw = TRUE) |>
+      as.data.frame() |> setNames(c("blend5_d1", "blend5_d2"))
+  )
+  test_poly <- cbind(
+    test_poly,
+    poly(X_test$blend_total_proj5, 2, raw = TRUE) |>
+      as.data.frame() |> setNames(c("blend5_d1", "blend5_d2"))
+  )
+}
+
+if ("pace_pressure5" %in% poly_terms) {
+  train_poly <- cbind(
+    train_poly,
+    poly(X_train$pace_pressure5, 2, raw = TRUE) |>
+      as.data.frame() |> setNames(c("pace5_d1", "pace5_d2"))
+  )
+  test_poly <- cbind(
+    test_poly,
+    poly(X_test$pace_pressure5, 2, raw = TRUE) |>
+      as.data.frame() |> setNames(c("pace5_d1", "pace5_d2"))
+  )
+}
+
+if ("shooting_env5" %in% poly_terms) {
+  train_poly <- cbind(
+    train_poly,
+    poly(X_train$shooting_env5, 2, raw = TRUE) |>
+      as.data.frame() |> setNames(c("shoot5_d1", "shoot5_d2"))
+  )
+  test_poly <- cbind(
+    test_poly,
+    poly(X_test$shooting_env5, 2, raw = TRUE) |>
+      as.data.frame() |> setNames(c("shoot5_d1", "shoot5_d2"))
+  )
+}
+
 lm_poly <- lm(total ~ ., data = train_poly)
 lm_poly_pred <- predict(lm_poly, newdata = test_poly)
 lm_poly_mae  <- mae_raw(y_test, lm_poly_pred)
@@ -282,44 +393,46 @@ lm_poly_mae  <- mae_raw(y_test, lm_poly_pred)
 cat("Polynomial Regression (degree 2) — Test MAE:", round(lm_poly_mae, 2), "\n")
 cat("Polynomial R-squared (training):", round(summary(lm_poly)$r.squared, 4), "\n")
 
-# Check which squared terms are significant
 poly_coefs <- summary(lm_poly)$coefficients
 cat("\nSquared-term significance (p-values):\n")
 print(round(poly_coefs[grep("_d2", rownames(poly_coefs)), 4], 4))
+
 ```
 
 
 ## Model 3: Gradient Boosted Trees (GBM)
-hardest model - takes long
 
 ```{r}
 gbm_grid <- expand.grid(
-  n.trees           = c(500, 1000, 1500),
-  interaction.depth = c(2, 4, 6),
-  shrinkage         = c(0.05, 0.1),
+  n.trees           = c(200, 500),
+  interaction.depth = c(2, 4),
+  shrinkage         = 0.1,
   n.minobsinnode    = 20
 )
 
 set.seed(42)
 gbm_tune <- train(
-  x         = X_train,
+  x         = as.data.frame(X_train),
   y         = y_train,
   method    = "gbm",
   metric    = "MAE",
-  trControl = trainControl(method = "cv", number = 5, verboseIter = FALSE),
+  trControl = trainControl(method = "cv", number = 3, verboseIter = FALSE),
   tuneGrid  = gbm_grid,
   verbose   = FALSE
 )
 
 best_gbm_params <- gbm_tune$bestTune
-cat("=== Best GBM Hyperparameters (5-fold CV) ===\n")
+cat("=== Best GBM Hyperparameters (3-fold CV) ===\n")
 print(best_gbm_params)
 
-# Refit on full training set 
+# Refit on full training set (raw total)
 set.seed(42)
+gbm_train_df <- as.data.frame(cbind(total = y_train, X_train))
+gbm_test_df  <- as.data.frame(X_test)
+
 gbm_final <- gbm(
   formula           = total ~ .,
-  data              = cbind(total = y_train, X_train),
+  data              = gbm_train_df,
   distribution      = "gaussian",
   n.trees           = best_gbm_params$n.trees,
   interaction.depth = best_gbm_params$interaction.depth,
@@ -330,32 +443,43 @@ gbm_final <- gbm(
   verbose           = FALSE
 )
 
-gbm_pred <- predict(gbm_final,
-                    newdata  = X_test,
-                    n.trees  = best_gbm_params$n.trees)
-gbm_mae  <- mae_raw(y_test, gbm_pred)
+gbm_pred <- predict(
+  gbm_final,
+  newdata = gbm_test_df,
+  n.trees = best_gbm_params$n.trees
+)
 
+gbm_mae <- mae_raw(y_test, gbm_pred)
 cat("GBM Final Model — Test MAE:", round(gbm_mae, 2), "\n")
 
-# who is importance let's see, then visualize
+# Variable importance
 cat("\nGBM — Variable Importance (top 15):\n")
-gbm_summary <- summary(gbm_final, n.trees = best_gbm_params$n.trees,
-                       plotit = FALSE)
+gbm_summary <- summary(
+  gbm_final,
+  n.trees = best_gbm_params$n.trees,
+  plotit = FALSE
+)
 print(head(gbm_summary, 15))
 
-barplot(head(gbm_summary$rel.inf, 15),
-        names.arg = head(gbm_summary$var, 15),
-        horiz     = TRUE,
-        las       = 2,
-        main      = "GBM Relative Influence (Top 15)",
-        xlab      = "Relative Influence (%)",
-        col       = "#2E75B6",
-        cex.names = 0.7)
-#same seed for predictability
+barplot(
+  head(gbm_summary$rel.inf, 15),
+  names.arg = head(gbm_summary$var, 15),
+  horiz     = TRUE,
+  las       = 2,
+  main      = "GBM Relative Influence (Top 15)",
+  xlab      = "Relative Influence (%)",
+  col       = "#2E75B6",
+  cex.names = 0.7
+)
+
+# Log-scale GBM
 set.seed(42)
+gbm_log_train_df <- as.data.frame(cbind(total_log = y_train_log, X_train))
+gbm_log_test_df  <- as.data.frame(X_test)
+
 gbm_log_final <- gbm(
   formula           = total_log ~ .,
-  data              = cbind(total_log = y_train_log, X_train),
+  data              = gbm_log_train_df,
   distribution      = "gaussian",
   n.trees           = best_gbm_params$n.trees,
   interaction.depth = best_gbm_params$interaction.depth,
@@ -366,10 +490,15 @@ gbm_log_final <- gbm(
   verbose           = FALSE
 )
 
-gbm_log_pred <- exp(predict(gbm_log_final,
-                             newdata = X_test,
-                             n.trees = best_gbm_params$n.trees))
-gbm_log_mae  <- mae_raw(y_test, gbm_log_pred)
+gbm_log_pred <- exp(
+  predict(
+    gbm_log_final,
+    newdata = gbm_log_test_df,
+    n.trees = best_gbm_params$n.trees
+  )
+)
+
+gbm_log_mae <- mae_raw(y_test, gbm_log_pred)
 cat("GBM (log scale, back-transformed) — Test MAE:", round(gbm_log_mae, 2), "\n")
 ```
 

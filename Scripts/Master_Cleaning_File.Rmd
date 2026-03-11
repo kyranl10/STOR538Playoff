@@ -17,6 +17,7 @@ library(tibble)
 library(lubridate)
 library(zoo)
 library(tidyr)
+library(slider)
 ```
 
 Read Raw Data
@@ -798,63 +799,19 @@ games_master_modern <- games_master %>%
   filter(!is.na(home_last5_pts), !is.na(away_last5_pts))
 ```
 
-Maya's work
-```{r}
-# --------------------------------------------
-# Maya Model Feature Engineering
-# (Added on top of Kyran master dataset)
-# --------------------------------------------
-
-library(slider)
-
-games_master_modern <- games_master_modern %>%
-  group_by(home_team) %>%
-  arrange(date, game_id, .by_group = TRUE) %>%
-  mutate(
-    shooting_env5 =
-      slide_dbl(lag(home_efg_pct), mean, .before = 4, .complete = TRUE),
-
-    pace_pressure5 =
-      slide_dbl(lag(home_pace), mean, .before = 4, .complete = TRUE),
-
-    free_throw_env5 =
-      slide_dbl(lag(home_ft_rate), mean, .before = 4, .complete = TRUE),
-
-    tov_env5 =
-      slide_dbl(lag(home_tov_pct), mean, .before = 4, .complete = TRUE),
-
-    blend_total_proj5 =
-      (shooting_env5 +
-       pace_pressure5 +
-       free_throw_env5 +
-       tov_env5) / 4
-  ) %>%
-  ungroup()
-```
-
 ##OREB Work
 
 ##OREB Improvement Features (future-safe)
 
-library(slider)
 
-##Read additional team-level season files
+Read additional team-level season files
 ```{r}
 team_pg <- read_csv("Data/Team Stats Per Game.csv", show_col_types = FALSE)
 team_100 <- read_csv("Data/Team Stats Per 100 Poss.csv", show_col_types = FALSE)
 ```
 
-## Helper to find likely column names
-```{r}
-pick_col <- function(df, candidates) {
-  nms <- names(df)
-  hit <- nms[tolower(nms) %in% tolower(candidates)]
-  if (length(hit) == 0) return(NA_character_)
-  hit[1]
-}
-```
 
-3) Team Stats Per Game: season-level opportunity/rebound features
+#Team Stats Per Game: season-level opportunity/rebound features
 ```{r}
 pg_team_col   <- pick_col(team_pg, c("team", "team_name", "teamName"))
 pg_season_col <- pick_col(team_pg, c("season"))
@@ -1147,31 +1104,96 @@ games_master <- games_master %>%
 # Rebuild modern data after adding new features
 ```{r}
 games_master_modern <- games_master %>%
-  filter(season >= 2010) %>%
-  filter(!is.na(home_last5_pts), !is.na(away_last5_pts)) %>%
-  filter(!is.na(home_last5_missed_fg), !is.na(away_last5_missed_fg)) %>%
-  filter(!is.na(home_orb_per100), !is.na(away_orb_per100))
+  filter(season >= 2010)
+```
 
-# Keep Maya features after your earlier engineering
-games_master_modern <- games_master_modern %>%
-  group_by(home_team) %>%
+# 7) Rebuild final model dataset with new OREB predictors
+```{r}
+maya_team_history_home <- games_master %>%
+  select(
+    game_id,
+    date,
+    team = home_team,
+    efg_pct = home_efg_pct,
+    pace = home_pace,
+    ft_rate = home_ft_rate,
+    tov_pct = home_tov_pct
+  )
+
+maya_team_history_away <- games_master %>%
+  select(
+    game_id,
+    date,
+    team = away_team,
+    efg_pct = away_efg_pct,
+    pace = away_pace,
+    ft_rate = away_ft_rate,
+    tov_pct = away_tov_pct
+  )
+
+maya_team_history <- bind_rows(maya_team_history_home, maya_team_history_away) %>%
+  mutate(date = as.Date(date)) %>%
+  arrange(team, date, game_id) %>%
+  group_by(team) %>%
   arrange(date, game_id, .by_group = TRUE) %>%
   mutate(
-    shooting_env5 =
-      slide_dbl(lag(home_efg_pct), mean, .before = 4, .complete = TRUE),
-    pace_pressure5 =
-      slide_dbl(lag(home_pace), mean, .before = 4, .complete = TRUE),
-    free_throw_env5 =
-      slide_dbl(lag(home_ft_rate), mean, .before = 4, .complete = TRUE),
-    tov_env5 =
-      slide_dbl(lag(home_tov_pct), mean, .before = 4, .complete = TRUE),
+    shooting_env5   = slide_dbl(lag(efg_pct), mean, .before = 4, .complete = TRUE),
+    pace_pressure5  = slide_dbl(lag(pace), mean, .before = 4, .complete = TRUE),
+    free_throw_env5 = slide_dbl(lag(ft_rate), mean, .before = 4, .complete = TRUE),
+    tov_env5        = slide_dbl(lag(tov_pct), mean, .before = 4, .complete = TRUE),
     blend_total_proj5 =
       (shooting_env5 + pace_pressure5 + free_throw_env5 + tov_env5) / 4
   ) %>%
   ungroup()
+
+maya_home <- maya_team_history %>%
+  select(
+    game_id,
+    team,
+    shooting_env5,
+    pace_pressure5,
+    free_throw_env5,
+    tov_env5,
+    blend_total_proj5
+  ) %>%
+  rename(home_team = team)
+
+maya_away <- maya_team_history %>%
+  select(
+    game_id,
+    team,
+    shooting_env5,
+    pace_pressure5,
+    free_throw_env5,
+    tov_env5,
+    blend_total_proj5
+  ) %>%
+  rename(
+    away_team = team,
+    away_shooting_env5 = shooting_env5,
+    away_pace_pressure5 = pace_pressure5,
+    away_free_throw_env5 = free_throw_env5,
+    away_tov_env5 = tov_env5,
+    away_blend_total_proj5 = blend_total_proj5
+  )
+
+games_master_modern <- games_master_modern %>%
+  left_join(maya_home, by = c("game_id", "home_team")) %>%
+  left_join(maya_away, by = c("game_id", "away_team")) %>%
+  mutate(
+    shooting_env5 = (shooting_env5 + away_shooting_env5) / 2,
+    pace_pressure5 = (pace_pressure5 + away_pace_pressure5) / 2,
+    free_throw_env5 = (free_throw_env5 + away_free_throw_env5) / 2,
+    tov_env5 = (tov_env5 + away_tov_env5) / 2,
+    blend_total_proj5 = (blend_total_proj5 + away_blend_total_proj5) / 2
+  )
+
+
 ```
 
-# 7) Rebuild final model dataset with new OREB predictors
+
+# 8) Final cleanup
+
 ```{r}
 model_data <- games_master_modern %>%
   select(
@@ -1179,7 +1201,6 @@ model_data <- games_master_modern %>%
     date,
     home_team,
     away_team,
-
     spread,
     total,
     oreb,
@@ -1193,105 +1214,51 @@ model_data <- games_master_modern %>%
     last5_pts_diff,
     last5_pts_allowed_diff,
     last5_oreb_diff,
-    last10_oreb_diff,
 
     rest_diff,
     home_back_to_back,
     away_back_to_back,
 
-    # season-level rebound / shooting profile
-    home_orb_pg,
-    away_orb_pg,
-    orb_pg_diff,
-    home_drb_pg,
-    away_drb_pg,
-    drb_pg_diff,
-    home_trb_pg,
-    away_trb_pg,
-    trb_pg_diff,
-    home_missed_fg_pg,
-    away_missed_fg_pg,
-    missed_fg_pg_diff,
-    home_x3pa_rate_pg,
-    away_x3pa_rate_pg,
-    x3pa_rate_pg_diff,
-
-    home_orb_per100,
-    away_orb_per100,
-    orb_per100_diff,
-    home_drb_per100,
-    away_drb_per100,
-    drb_per100_diff,
-    home_trb_per100,
-    away_trb_per100,
-    trb_per100_diff,
-    home_rebound_edge,
-    away_rebound_edge,
-    rebound_matchup_edge,
-
-    # rolling OREB opportunity features
-    home_last5_missed_fg,
-    away_last5_missed_fg,
-    last5_missed_fg_diff,
-    home_last10_missed_fg,
-    away_last10_missed_fg,
-    last10_missed_fg_diff,
-
-    home_last5_missed_3pt,
-    away_last5_missed_3pt,
-    last5_missed_3pt_diff,
-    home_last10_missed_3pt,
-    away_last10_missed_3pt,
-    last10_missed_3pt_diff,
-
-    home_last5_x3pa_rate,
-    away_last5_x3pa_rate,
-    last5_x3pa_rate_diff,
-    home_last10_x3pa_rate,
-    away_last10_x3pa_rate,
-    last10_x3pa_rate_diff,
-
-    home_last5_oreb,
-    away_last5_oreb,
-    home_last10_oreb,
-    away_last10_oreb,
-    home_last5_oreb_allowed,
-    away_last5_oreb_allowed,
-    last5_oreb_allowed_diff,
-    home_last10_oreb_allowed,
-    away_last10_oreb_allowed,
-    last10_oreb_allowed_diff,
-
-    expected_missed_fg,
-    expected_oreb_pressure,
-    home_oreb_matchup,
-    away_oreb_matchup,
-    pace_rebound_pressure,
-
-    # Maya variables
     shooting_env5,
     pace_pressure5,
     free_throw_env5,
     tov_env5,
-    blend_total_proj5
+    blend_total_proj5,
+
+    orb_pg_diff,
+    drb_pg_diff,
+    trb_pg_diff,
+    missed_fg_pg_diff,
+    x3pa_rate_pg_diff,
+    expected_missed_fg,
+
+    orb_per100_diff,
+    drb_per100_diff,
+    trb_per100_diff,
+    x3pa_rate_per100_diff,
+    rebound_matchup_edge,
+
+    last5_missed_fg_diff,
+    last10_missed_fg_diff,
+    last5_missed_3pt_diff,
+    last10_missed_3pt_diff,
+    last5_x3pa_rate_diff,
+    last10_x3pa_rate_diff,
+    last10_oreb_diff,
+    last5_oreb_allowed_diff,
+    last10_oreb_allowed_diff,
+    expected_oreb_pressure,
+    home_oreb_matchup,
+    away_oreb_matchup,
+    pace_rebound_pressure
   ) %>%
   replace_na(list(
     rest_diff = 0,
     home_back_to_back = 0,
     away_back_to_back = 0
   )) %>%
-  drop_na(
-    game_id, date, spread, total, oreb,
-    home_last5_missed_fg, away_last5_missed_fg,
-    home_orb_per100, away_orb_per100,
-    home_last5_oreb_allowed, away_last5_oreb_allowed
-  )
-```
+  drop_na(game_id, date, spread, total, oreb)
 
-
-# 8) Final cleanup
-
-```{r}
 model_data_v2 <- model_data %>%
   mutate(date = as.Date(date)) %>%
   filter(month(date) %in% c(10, 11, 12, 1, 2, 3, 4)) %>%
