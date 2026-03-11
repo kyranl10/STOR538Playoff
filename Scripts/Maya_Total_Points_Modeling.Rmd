@@ -31,7 +31,7 @@ library(purrr)
 ```
 
 ```{r}
-model_ready <- read_csv("TOTAL_MODEL_READY.csv", show_col_types = FALSE) |>
+model_ready <- read_csv("FINAL_MODEL_READY.csv", show_col_types = FALSE) |>
   filter(game_date >= as.Date("2013-10-01"))
 
 cat("Total rows:", nrow(model_ready), "\n")
