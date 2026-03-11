@@ -442,7 +442,7 @@ model_ready <- model_data_total |>
 
     home_back_to_back, away_back_to_back,
 
-    blend_total_proj5, 
+    blend_total_proj5,blend_total_proj10, 
 
     rest_diff_capped,
     any_back_to_back,
@@ -509,5 +509,6 @@ cor_vals <- sapply(key_features, function(f) {
 cat("\nCorrelations with total (model_ready):\n")
 print(round(sort(cor_vals, decreasing = TRUE), 3))
 ```
+
 
 
