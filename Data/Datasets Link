@@ -1,6 +1,26 @@
 Master Dataset (UPDATED 3/11/26 5:05pm)
 https://drive.google.com/file/d/1eJUw_ow5KM7yKGrAQIkoB0gO6uW4ygY8/view?usp=sharing
 
+
+New Oreb Variables
+| Variable                   | What it Measures                                                                        |
+| -------------------------- | --------------------------------------------------------------------------------------- |
+| expected_missed_fg         | Estimated number of missed field goals in the game                                      |
+| expected_oreb_pressure     | Estimated pressure on the offensive glass based on missed shots and rebounding ability  |
+| home_oreb_matchup          | Home team offensive rebounding ability relative to the away team’s defensive rebounding |
+| away_oreb_matchup          | Away team offensive rebounding ability relative to the home team’s defensive rebounding |
+| pace_rebound_pressure      | Interaction between game pace and rebound opportunities                                 |
+| missed_fg_pg_diff          | Difference in missed field goals per game between teams                                 |
+| orb_per100_diff            | Difference in offensive rebounds per 100 possessions                                    |
+| drb_per100_diff            | Difference in defensive rebounds per 100 possessions                                    |
+| trb_per100_dif             | Difference in total rebounds per 100 possessions                                        |
+| last5_oreb_diff            | Difference in offensive rebounds over the last 5 games                                  |
+| last10_oreb_diff           | Difference in offensive rebounds over the last 10 games                                 |
+| last5_oreb_allowed_diff    | Difference in offensive rebounds allowed over the last 5 games                          |
+| last10_oreb_allowed_diff   | Difference in offensive rebounds allowed over the last 10 games                         |
+
+
+
 !!!Make Sure To Add Raw Datasets To Your Local Copy Of The Repo Into This Data Folder Before You Run!!!
 Games.csv, 
 Opponent Stats Per Game.csv, 
