@@ -98,7 +98,7 @@ id_cols <- c("game_id", "game_date", "home_team", "away_team", "total", "oreb")
 
 numeric_data <- model_ready |>
   select(where(is.numeric)) |>
-  select(-any_of(c("total", "oreb")))
+  select(-any_of(c("game_id", "total", "oreb")))
 
 # remove zero-variance columns first
 zero_var <- names(numeric_data)[sapply(
@@ -120,7 +120,12 @@ drop_for_vif <- c(
   "orb_pg_diff",
   "drb_pg_diff",
   "trb_pg_diff",
-  "x3pa_rate_pg_diff"
+  "x3pa_rate_pg_diff",
+  "shooting_env5",
+  "pace_pressure5",
+  "free_throw_env5",
+  "tov_env5",
+  "pace_rebound_pressure"
 )
 
 vif_vars <- setdiff(names(numeric_data), drop_for_vif)
@@ -159,7 +164,12 @@ feat_drop <- c(
   "orb_pg_diff",
   "drb_pg_diff",
   "trb_pg_diff",
-  "x3pa_rate_pg_diff"
+  "x3pa_rate_pg_diff",
+  "shooting_env5",
+  "pace_pressure5",
+  "free_throw_env5",
+  "tov_env5",
+  "pace_rebound_pressure"
 )
 
 feat_cols <- setdiff(feat_cols, feat_drop)
@@ -200,7 +210,6 @@ print(sort(abs(cor_with_total), decreasing = TRUE))
 ## Cross-validation
 
 ```{r}
-# Created a time-series cross-validation using caret's timeslice method. First 60% of training data as initial training, each validation window at 8% of training data. Then did 5-fold CV, compute MAE functions fo rlater, create correlation matrix
 ts_ctrl <- trainControl(
   method          = "timeslice",
   initialWindow  = floor(nrow(train) * 0.6),   
@@ -217,7 +226,7 @@ cv5_ctrl <- trainControl(
 )
 
 mae_raw <- function(actual, predicted) {
-  mean(abs(actual - predicted))
+  mean(abs(actual - predicted), na.rm = TRUE)
 }
 
 mae_log_backtransform <- function(actual, pred_log) {
@@ -246,7 +255,7 @@ o l s l o l
 ```{r}
 lm_full <- lm(total ~ ., data = cbind(total = y_train, X_train))
 lm_full_pred <- predict(lm_full, newdata = X_test)
-lm_full_mae  <- mae_raw(y_test, lm_full_pred)
+lm_full_mae <- mae_raw(y_test, lm_full_pred)
 
 cat("OLS Full Model — Test MAE:", round(lm_full_mae, 2), "\n")
 cat("R-squared (training):", round(summary(lm_full)$r.squared, 4), "\n")
@@ -262,8 +271,6 @@ if (requireNamespace("car", quietly = TRUE)) {
 ### Pruned OLS Model 1
 ```{r}
 pruned_vars <- c(
-  "pace_pressure5",
-  "shooting_env5",
   "spread",
   "rest_diff",
   "home_back_to_back",
@@ -280,7 +287,6 @@ pruned_vars <- c(
   "last5_missed_fg_diff",
   "last10_oreb_diff",
   "last5_oreb_allowed_diff",
-  "pace_rebound_pressure",
   "orb_per100_diff",
   "drb_per100_diff",
   "trb_per100_diff",
@@ -331,58 +337,56 @@ poly_base_vars <- intersect(
     "opp_pts_allowed_diff",
     "opp_orb_allowed_diff",
     "expected_oreb_pressure",
-    "rebound_matchup_edge",
     "last5_missed_fg_diff",
-    "last5_oreb_allowed_diff",
-    "pace_rebound_pressure"
+    "last5_oreb_allowed_diff"
   ),
   names(X_train)
 )
 
 poly_terms <- intersect(
-  c("blend_total_proj5", "pace_pressure5", "shooting_env5"),
+  c("expected_oreb_pressure", "last5_pts_diff", "last5_pts_allowed_diff"),
   names(X_train)
 )
 
 train_poly <- cbind(total = y_train, X_train[, poly_base_vars, drop = FALSE])
 test_poly  <- X_test[, poly_base_vars, drop = FALSE]
 
-if ("blend_total_proj5" %in% poly_terms) {
+if ("expected_oreb_pressure" %in% poly_terms) {
   train_poly <- cbind(
     train_poly,
-    poly(X_train$blend_total_proj5, 2, raw = TRUE) |>
-      as.data.frame() |> setNames(c("blend5_d1", "blend5_d2"))
+    poly(X_train$expected_oreb_pressure, 2, raw = TRUE) |>
+      as.data.frame() |> setNames(c("orebpress_d1", "orebpress_d2"))
   )
   test_poly <- cbind(
     test_poly,
-    poly(X_test$blend_total_proj5, 2, raw = TRUE) |>
-      as.data.frame() |> setNames(c("blend5_d1", "blend5_d2"))
+    poly(X_test$expected_oreb_pressure, 2, raw = TRUE) |>
+      as.data.frame() |> setNames(c("orebpress_d1", "orebpress_d2"))
   )
 }
 
-if ("pace_pressure5" %in% poly_terms) {
+if ("last5_pts_diff" %in% poly_terms) {
   train_poly <- cbind(
     train_poly,
-    poly(X_train$pace_pressure5, 2, raw = TRUE) |>
-      as.data.frame() |> setNames(c("pace5_d1", "pace5_d2"))
+    poly(X_train$last5_pts_diff, 2, raw = TRUE) |>
+      as.data.frame() |> setNames(c("last5pts_d1", "last5pts_d2"))
   )
   test_poly <- cbind(
     test_poly,
-    poly(X_test$pace_pressure5, 2, raw = TRUE) |>
-      as.data.frame() |> setNames(c("pace5_d1", "pace5_d2"))
+    poly(X_test$last5_pts_diff, 2, raw = TRUE) |>
+      as.data.frame() |> setNames(c("last5pts_d1", "last5pts_d2"))
   )
 }
 
-if ("shooting_env5" %in% poly_terms) {
+if ("last5_pts_allowed_diff" %in% poly_terms) {
   train_poly <- cbind(
     train_poly,
-    poly(X_train$shooting_env5, 2, raw = TRUE) |>
-      as.data.frame() |> setNames(c("shoot5_d1", "shoot5_d2"))
+    poly(X_train$last5_pts_allowed_diff, 2, raw = TRUE) |>
+      as.data.frame() |> setNames(c("last5allow_d1", "last5allow_d2"))
   )
   test_poly <- cbind(
     test_poly,
-    poly(X_test$shooting_env5, 2, raw = TRUE) |>
-      as.data.frame() |> setNames(c("shoot5_d1", "shoot5_d2"))
+    poly(X_test$last5_pts_allowed_diff, 2, raw = TRUE) |>
+      as.data.frame() |> setNames(c("last5allow_d1", "last5allow_d2"))
   )
 }
 
