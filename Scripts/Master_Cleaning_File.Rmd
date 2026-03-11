@@ -832,8 +832,346 @@ games_master_modern <- games_master_modern %>%
   ungroup()
 ```
 
+##OREB Work
 
-Rebuilding Final Model Dataset
+##OREB Improvement Features (future-safe)
+
+library(slider)
+
+##Read additional team-level season files
+```{r}
+team_pg <- read_csv("Data/Team Stats Per Game.csv", show_col_types = FALSE)
+team_100 <- read_csv("Data/Team Stats Per 100 Poss.csv", show_col_types = FALSE)
+```
+
+## Helper to find likely column names
+```{r}
+pick_col <- function(df, candidates) {
+  nms <- names(df)
+  hit <- nms[tolower(nms) %in% tolower(candidates)]
+  if (length(hit) == 0) return(NA_character_)
+  hit[1]
+}
+```
+
+3) Team Stats Per Game: season-level opportunity/rebound features
+```{r}
+pg_team_col   <- pick_col(team_pg, c("team", "team_name", "teamName"))
+pg_season_col <- pick_col(team_pg, c("season"))
+pg_fg_col     <- pick_col(team_pg, c("fg_per_game", "fg"))
+pg_fga_col    <- pick_col(team_pg, c("fga_per_game", "fga"))
+pg_x3pa_col   <- pick_col(team_pg, c("x3pa_per_game", "x3pa", "3pa_per_game"))
+pg_orb_col    <- pick_col(team_pg, c("orb_per_game", "oreb_per_game", "orb"))
+pg_drb_col    <- pick_col(team_pg, c("drb_per_game", "dreb_per_game", "drb"))
+pg_trb_col    <- pick_col(team_pg, c("trb_per_game", "reb_per_game", "trb"))
+
+pg_team_col
+pg_season_col
+pg_fg_col
+pg_fga_col
+pg_x3pa_col
+pg_orb_col
+pg_drb_col
+pg_trb_col
+
+team_pg_small <- team_pg %>%
+  transmute(
+    season = .data[[pg_season_col]],
+    team   = .data[[pg_team_col]],
+    fg_pg  = .data[[pg_fg_col]],
+    fga_pg = .data[[pg_fga_col]],
+    x3pa_pg = .data[[pg_x3pa_col]],
+    orb_pg = .data[[pg_orb_col]],
+    drb_pg = .data[[pg_drb_col]],
+    trb_pg = .data[[pg_trb_col]]
+  ) %>%
+  mutate(
+    missed_fg_pg = fga_pg - fg_pg,
+    x3pa_rate_pg = if_else(fga_pg > 0, x3pa_pg / fga_pg, NA_real_)
+  ) %>%
+  distinct()
+
+home_pg <- team_pg_small %>%
+  rename_with(~ paste0("home_", .x), -c(season, team))
+
+away_pg <- team_pg_small %>%
+  rename_with(~ paste0("away_", .x), -c(season, team))
+
+games_master <- games_master %>%
+  left_join(home_pg, by = c("season", "home_team_full" = "team")) %>%
+  left_join(away_pg, by = c("season", "away_team_full" = "team")) %>%
+  mutate(
+    orb_pg_diff        = home_orb_pg - away_orb_pg,
+    drb_pg_diff        = home_drb_pg - away_drb_pg,
+    trb_pg_diff        = home_trb_pg - away_trb_pg,
+    missed_fg_pg_diff  = home_missed_fg_pg - away_missed_fg_pg,
+    x3pa_rate_pg_diff  = home_x3pa_rate_pg - away_x3pa_rate_pg,
+    expected_missed_fg = home_missed_fg_pg + away_missed_fg_pg
+  )
+```
+
+# 4) Team Stats Per 100 Poss: pace-adjusted rebound strength
+
+```{r}
+p100_team_col   <- pick_col(team_100, c("team", "team_name", "teamName"))
+p100_season_col <- pick_col(team_100, c("season"))
+p100_orb_col    <- pick_col(team_100, c("orb_per_100_poss", "oreb_per_100_poss", "orb_per_100"))
+p100_drb_col    <- pick_col(team_100, c("drb_per_100_poss", "dreb_per_100_poss", "drb_per_100"))
+p100_trb_col    <- pick_col(team_100, c("trb_per_100_poss", "reb_per_100_poss", "trb_per_100"))
+p100_fga_col    <- pick_col(team_100, c("fga_per_100_poss", "fga_per_100"))
+p100_x3pa_col   <- pick_col(team_100, c("x3pa_per_100_poss", "3pa_per_100_poss", "x3pa_per_100"))
+
+p100_team_col
+p100_season_col
+p100_orb_col
+p100_drb_col
+p100_trb_col
+p100_fga_col
+p100_x3pa_col
+team_100_small <- team_100 %>%
+  transmute(
+    season = .data[[p100_season_col]],
+    team   = .data[[p100_team_col]],
+    orb_per100 = .data[[p100_orb_col]],
+    drb_per100 = .data[[p100_drb_col]],
+    trb_per100 = .data[[p100_trb_col]],
+    fga_per100 = .data[[p100_fga_col]],
+    x3pa_per100 = .data[[p100_x3pa_col]]
+  ) %>%
+  mutate(
+    x3pa_rate_per100 = if_else(fga_per100 > 0, x3pa_per100 / fga_per100, NA_real_)
+  ) %>%
+  distinct()
+
+home_100 <- team_100_small %>%
+  rename_with(~ paste0("home_", .x), -c(season, team))
+
+away_100 <- team_100_small %>%
+  rename_with(~ paste0("away_", .x), -c(season, team))
+
+games_master <- games_master %>%
+  left_join(home_100, by = c("season", "home_team_full" = "team")) %>%
+  left_join(away_100, by = c("season", "away_team_full" = "team")) %>%
+  mutate(
+    orb_per100_diff       = home_orb_per100 - away_orb_per100,
+    drb_per100_diff       = home_drb_per100 - away_drb_per100,
+    trb_per100_diff       = home_trb_per100 - away_trb_per100,
+    x3pa_rate_per100_diff = home_x3pa_rate_per100 - away_x3pa_rate_per100,
+
+    # matchup edges
+    home_rebound_edge = home_orb_per100 - away_drb_per100,
+    away_rebound_edge = away_orb_per100 - home_drb_per100,
+    rebound_matchup_edge = home_rebound_edge - away_rebound_edge
+  )
+```
+
+## Game-level rolling OREB opportunity features from TeamStatistics
+```{r}
+ts_game_id_col <- pick_col(team_stats, c("gameId"))
+ts_team_col    <- pick_col(team_stats, c("teamName", "team"))
+ts_home_col    <- pick_col(team_stats, c("home"))
+ts_fg_col      <- pick_col(team_stats, c("fieldGoalsMade", "fg", "fgm"))
+ts_fga_col     <- pick_col(team_stats, c("fieldGoalsAttempted", "fga"))
+ts_x3p_col     <- pick_col(team_stats, c("threePointersMade", "x3p", "x3pm", "threePointFieldGoalsMade"))
+ts_x3pa_col    <- pick_col(team_stats, c("threePointersAttempted", "x3pa", "threePointFieldGoalsAttempted"))
+ts_oreb_col    <- pick_col(team_stats, c("reboundsOffensive", "oreb"))
+ts_dreb_col    <- pick_col(team_stats, c("reboundsDefensive", "dreb"))
+
+team_box_roll <- team_stats %>%
+  transmute(
+    game_id = as.character(.data[[ts_game_id_col]]),
+    team    = .data[[ts_team_col]],
+    home    = .data[[ts_home_col]],
+    fg      = .data[[ts_fg_col]],
+    fga     = .data[[ts_fga_col]],
+    x3p     = .data[[ts_x3p_col]],
+    x3pa    = .data[[ts_x3pa_col]],
+    oreb    = .data[[ts_oreb_col]],
+    dreb    = .data[[ts_dreb_col]]
+  )
+
+team_box_roll_home <- team_box_roll %>%
+  filter(home == 1) %>%
+  select(
+    game_id,
+    team,
+    fg, fga, x3p, x3pa, oreb, dreb
+  ) %>%
+  left_join(games_master %>% select(game_id, date), by = "game_id") %>%
+  mutate(
+    pts_dummy = NA_real_,
+    oreb_allowed = NA_real_
+  )
+
+team_box_roll_away <- team_box_roll %>%
+  filter(home == 0) %>%
+  select(
+    game_id,
+    team,
+    fg, fga, x3p, x3pa, oreb, dreb
+  ) %>%
+  left_join(games_master %>% select(game_id, date), by = "game_id") %>%
+  mutate(
+    pts_dummy = NA_real_,
+    oreb_allowed = NA_real_
+  )
+
+team_box_roll_long <- bind_rows(team_box_roll_home, team_box_roll_away) %>%
+  mutate(
+    date = as.Date(date),
+    missed_fg = fga - fg,
+    missed_3pt = x3pa - x3p,
+    x3pa_rate_game = if_else(fga > 0, x3pa / fga, NA_real_)
+  ) %>%
+  arrange(team, date, game_id)
+
+# build oreb_allowed from opponent same game
+opp_oreb_lookup_home <- games_master %>%
+  select(game_id, home_team, away_oreb)
+
+opp_oreb_lookup_away <- games_master %>%
+  select(game_id, away_team, home_oreb)
+
+team_box_roll_long <- team_box_roll_long %>%
+  left_join(opp_oreb_lookup_home, by = c("game_id", "team" = "home_team")) %>%
+  left_join(opp_oreb_lookup_away, by = c("game_id", "team" = "away_team")) %>%
+  mutate(
+    oreb_allowed = coalesce(away_oreb, home_oreb)
+  ) %>%
+  select(-away_oreb, -home_oreb)
+
+team_box_roll_long <- team_box_roll_long %>%
+  group_by(team) %>%
+  arrange(date, game_id, .by_group = TRUE) %>%
+  mutate(
+    last5_missed_fg = slide_dbl(lag(missed_fg), mean, .before = 4, .complete = TRUE),
+    last10_missed_fg = slide_dbl(lag(missed_fg), mean, .before = 9, .complete = TRUE),
+
+    last5_missed_3pt = slide_dbl(lag(missed_3pt), mean, .before = 4, .complete = TRUE),
+    last10_missed_3pt = slide_dbl(lag(missed_3pt), mean, .before = 9, .complete = TRUE),
+
+    last5_x3pa_rate = slide_dbl(lag(x3pa_rate_game), mean, .before = 4, .complete = TRUE),
+    last10_x3pa_rate = slide_dbl(lag(x3pa_rate_game), mean, .before = 9, .complete = TRUE),
+
+    last10_oreb = slide_dbl(lag(oreb), mean, .before = 9, .complete = TRUE),
+    last5_oreb_allowed = slide_dbl(lag(oreb_allowed), mean, .before = 4, .complete = TRUE),
+    last10_oreb_allowed = slide_dbl(lag(oreb_allowed), mean, .before = 9, .complete = TRUE)
+  ) %>%
+  ungroup()
+
+home_oreb_roll <- team_box_roll_long %>%
+  select(
+    game_id,
+    team,
+    last5_missed_fg,
+    last10_missed_fg,
+    last5_missed_3pt,
+    last10_missed_3pt,
+    last5_x3pa_rate,
+    last10_x3pa_rate,
+    last10_oreb,
+    last5_oreb_allowed,
+    last10_oreb_allowed
+  ) %>%
+  rename(
+    home_team = team,
+    home_last5_missed_fg = last5_missed_fg,
+    home_last10_missed_fg = last10_missed_fg,
+    home_last5_missed_3pt = last5_missed_3pt,
+    home_last10_missed_3pt = last10_missed_3pt,
+    home_last5_x3pa_rate = last5_x3pa_rate,
+    home_last10_x3pa_rate = last10_x3pa_rate,
+    home_last10_oreb = last10_oreb,
+    home_last5_oreb_allowed = last5_oreb_allowed,
+    home_last10_oreb_allowed = last10_oreb_allowed
+  )
+
+away_oreb_roll <- team_box_roll_long %>%
+  select(
+    game_id,
+    team,
+    last5_missed_fg,
+    last10_missed_fg,
+    last5_missed_3pt,
+    last10_missed_3pt,
+    last5_x3pa_rate,
+    last10_x3pa_rate,
+    last10_oreb,
+    last5_oreb_allowed,
+    last10_oreb_allowed
+  ) %>%
+  rename(
+    away_team = team,
+    away_last5_missed_fg = last5_missed_fg,
+    away_last10_missed_fg = last10_missed_fg,
+    away_last5_missed_3pt = last5_missed_3pt,
+    away_last10_missed_3pt = last10_missed_3pt,
+    away_last5_x3pa_rate = last5_x3pa_rate,
+    away_last10_x3pa_rate = last10_x3pa_rate,
+    away_last10_oreb = last10_oreb,
+    away_last5_oreb_allowed = last5_oreb_allowed,
+    away_last10_oreb_allowed = last10_oreb_allowed
+  )
+
+games_master <- games_master %>%
+  left_join(home_oreb_roll, by = c("game_id", "home_team")) %>%
+  left_join(away_oreb_roll, by = c("game_id", "away_team")) %>%
+  mutate(
+    last5_missed_fg_diff = home_last5_missed_fg - away_last5_missed_fg,
+    last10_missed_fg_diff = home_last10_missed_fg - away_last10_missed_fg,
+
+    last5_missed_3pt_diff = home_last5_missed_3pt - away_last5_missed_3pt,
+    last10_missed_3pt_diff = home_last10_missed_3pt - away_last10_missed_3pt,
+
+    last5_x3pa_rate_diff = home_last5_x3pa_rate - away_last5_x3pa_rate,
+    last10_x3pa_rate_diff = home_last10_x3pa_rate - away_last10_x3pa_rate,
+
+    last10_oreb_diff = home_last10_oreb - away_last10_oreb,
+    last5_oreb_allowed_diff = home_last5_oreb_allowed - away_last5_oreb_allowed,
+    last10_oreb_allowed_diff = home_last10_oreb_allowed - away_last10_oreb_allowed,
+
+    # matchup-style engineered features
+    expected_oreb_pressure =
+      (home_last5_missed_fg + away_last5_missed_fg) *
+      ((home_orb_per100 + away_orb_per100) / 200),
+
+    home_oreb_matchup = home_orb_per100 * away_last5_oreb_allowed,
+    away_oreb_matchup = away_orb_per100 * home_last5_oreb_allowed,
+
+    pace_rebound_pressure =
+      ((home_last5_pace + away_last5_pace) / 2) *
+      (home_last5_missed_fg + away_last5_missed_fg)
+  )
+```
+
+# Rebuild modern data after adding new features
+```{r}
+games_master_modern <- games_master %>%
+  filter(season >= 2010) %>%
+  filter(!is.na(home_last5_pts), !is.na(away_last5_pts)) %>%
+  filter(!is.na(home_last5_missed_fg), !is.na(away_last5_missed_fg)) %>%
+  filter(!is.na(home_orb_per100), !is.na(away_orb_per100))
+
+# Keep Maya features after your earlier engineering
+games_master_modern <- games_master_modern %>%
+  group_by(home_team) %>%
+  arrange(date, game_id, .by_group = TRUE) %>%
+  mutate(
+    shooting_env5 =
+      slide_dbl(lag(home_efg_pct), mean, .before = 4, .complete = TRUE),
+    pace_pressure5 =
+      slide_dbl(lag(home_pace), mean, .before = 4, .complete = TRUE),
+    free_throw_env5 =
+      slide_dbl(lag(home_ft_rate), mean, .before = 4, .complete = TRUE),
+    tov_env5 =
+      slide_dbl(lag(home_tov_pct), mean, .before = 4, .complete = TRUE),
+    blend_total_proj5 =
+      (shooting_env5 + pace_pressure5 + free_throw_env5 + tov_env5) / 4
+  ) %>%
+  ungroup()
+```
+
+# 7) Rebuild final model dataset with new OREB predictors
 ```{r}
 model_data <- games_master_modern %>%
   select(
@@ -855,10 +1193,80 @@ model_data <- games_master_modern %>%
     last5_pts_diff,
     last5_pts_allowed_diff,
     last5_oreb_diff,
+    last10_oreb_diff,
 
     rest_diff,
     home_back_to_back,
     away_back_to_back,
+
+    # season-level rebound / shooting profile
+    home_orb_pg,
+    away_orb_pg,
+    orb_pg_diff,
+    home_drb_pg,
+    away_drb_pg,
+    drb_pg_diff,
+    home_trb_pg,
+    away_trb_pg,
+    trb_pg_diff,
+    home_missed_fg_pg,
+    away_missed_fg_pg,
+    missed_fg_pg_diff,
+    home_x3pa_rate_pg,
+    away_x3pa_rate_pg,
+    x3pa_rate_pg_diff,
+
+    home_orb_per100,
+    away_orb_per100,
+    orb_per100_diff,
+    home_drb_per100,
+    away_drb_per100,
+    drb_per100_diff,
+    home_trb_per100,
+    away_trb_per100,
+    trb_per100_diff,
+    home_rebound_edge,
+    away_rebound_edge,
+    rebound_matchup_edge,
+
+    # rolling OREB opportunity features
+    home_last5_missed_fg,
+    away_last5_missed_fg,
+    last5_missed_fg_diff,
+    home_last10_missed_fg,
+    away_last10_missed_fg,
+    last10_missed_fg_diff,
+
+    home_last5_missed_3pt,
+    away_last5_missed_3pt,
+    last5_missed_3pt_diff,
+    home_last10_missed_3pt,
+    away_last10_missed_3pt,
+    last10_missed_3pt_diff,
+
+    home_last5_x3pa_rate,
+    away_last5_x3pa_rate,
+    last5_x3pa_rate_diff,
+    home_last10_x3pa_rate,
+    away_last10_x3pa_rate,
+    last10_x3pa_rate_diff,
+
+    home_last5_oreb,
+    away_last5_oreb,
+    home_last10_oreb,
+    away_last10_oreb,
+    home_last5_oreb_allowed,
+    away_last5_oreb_allowed,
+    last5_oreb_allowed_diff,
+    home_last10_oreb_allowed,
+    away_last10_oreb_allowed,
+    last10_oreb_allowed_diff,
+
+    expected_missed_fg,
+    expected_oreb_pressure,
+    home_oreb_matchup,
+    away_oreb_matchup,
+    pace_rebound_pressure,
 
     # Maya variables
     shooting_env5,
@@ -872,70 +1280,21 @@ model_data <- games_master_modern %>%
     home_back_to_back = 0,
     away_back_to_back = 0
   )) %>%
-  drop_na(spread, total)
+  drop_na(
+    game_id, date, spread, total, oreb,
+    home_last5_missed_fg, away_last5_missed_fg,
+    home_orb_per100, away_orb_per100,
+    home_last5_oreb_allowed, away_last5_oreb_allowed
+  )
 ```
 
-##Additional Fixes
 
-Loading
-```{r}
-model_data_v2 <- model_data
-```
+# 8) Final cleanup
 
-Inspecting Month Distribution
 ```{r}
-model_data_v2 %>%
-  mutate(
-    date = as.Date(date),
-    month = month(date)
-  ) %>%
-  count(month)
-```
-
-Normal NBA Szn Window
-```{r}
-model_data_v2 <- model_data_v2 %>%
+model_data_v2 <- model_data %>%
   mutate(date = as.Date(date)) %>%
-  filter(month(date) %in% c(10, 11, 12, 1, 2, 3, 4))
-```
-
-Removing Weak Variables
-```{r}
-model_data_v2 <- model_data_v2 %>%
-  select(
-    -any_of(c(
-      "off_rtg_diff",
-      "def_rtg_diff",
-      "net_rtg_diff",
-      "pace_diff",
-      "efg_pct_diff",
-      "tov_pct_diff",
-      "orb_pct_diff",
-      "ft_rate_diff"
-    ))
-  ) %>%
-  drop_na()
-```
-
-Verify
-```{r}
-dim(model_data_v2)
-
-colSums(is.na(model_data_v2))
-
-sum(duplicated(model_data_v2$game_id))
-
-model_data_v2 %>%
-  mutate(month = month(date)) %>%
-  count(month)
-
-summary(model_data_v2$spread)
-summary(model_data_v2$total)
-summary(model_data_v2$oreb)
-```
-
-```{r}
-model_data_v2 <- model_data_v2 %>%
+  filter(month(date) %in% c(10, 11, 12, 1, 2, 3, 4)) %>%
   rename(game_date = date)
 ```
 
@@ -943,5 +1302,6 @@ Save
 ```{r}
 write_csv(model_data_v2, "Data/FINAL_MODEL_READY.csv")
 ```
+
 
 
