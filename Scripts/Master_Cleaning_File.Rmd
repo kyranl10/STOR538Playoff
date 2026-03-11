@@ -21,8 +21,8 @@ library(tidyr)
 
 Read Raw Data
 ```{r}
-games <- read_csv("Games.csv", show_col_types = FALSE)
-opp_pg <- read_csv("Opponent Stats Per Game.csv", show_col_types = FALSE)
+games <- read_csv("../Data/Games.csv", show_col_types = FALSE)
+opp_pg <- read_csv("../Data/Opponent Stats Per Game.csv", show_col_types = FALSE)
 ```
 
 Inspect Column Names
@@ -165,15 +165,10 @@ games_master_modern %>%
   head(20)
 ```
 
-```{r}
-write_csv(games_master, "master_dataset_v1.csv")
-write_csv(games_master_modern, "master_dataset_modern_v1.csv")
-```
-
 ##Creating OREB
 
 ```{r}
-team_stats <- read_csv("TeamStatistics.csv", show_col_types = FALSE)
+team_stats <- read_csv("../Data/TeamStatistics.csv", show_col_types = FALSE)
 ```
 
 ```{r}
@@ -246,20 +241,12 @@ games_master_modern <- games_master %>%
   filter(season >= 2010)
 ```
 
-Save
-```{r}
-write_csv(games_master, "master_dataset_v2.csv")
-```
-```{r}
-write_csv(games_master_modern, "master_dataset_modern_v2.csv")
-```
 
 ##Adding Advanced Team Stats
 
 Advanced Team File
 ```{r}
-team_adv <- read_csv("TeamStatisticsAdvanced.csv", show_col_types = FALSE)
-
+team_adv <- read_csv("../Data/TeamStatisticsAdvanced.csv", show_col_types = FALSE)
 names(team_adv)
 head(team_adv)
 ```
@@ -376,7 +363,7 @@ games_master %>%
 
 Loading Dataset
 ```{r}
-team_ff <- read_csv("TeamStatisticsFourFactors.csv", show_col_types = FALSE)
+team_ff <- read_csv("../Data/TeamStatisticsFourFactors.csv", show_col_types = FALSE)
 ```
 
 Inspecting Columns
@@ -480,12 +467,6 @@ Filtering
 games_master_modern <- games_master %>%
   filter(!is.na(home_off_rtg)) %>%
   filter(!is.na(home_efg_pct))
-```
-
-Saving
-```{r}
-write_csv(games_master, "master_dataset_v4.csv")
-write_csv(games_master_modern, "master_dataset_modern_v4.csv")
 ```
 
 ##Rolling Averages
@@ -608,12 +589,6 @@ games_master_modern <- games_master %>%
   filter(!is.na(home_efg_pct))
 ```
 
-Save
-```{r}
-write_csv(games_master, "master_dataset_v5.csv")
-write_csv(games_master_modern, "master_dataset_modern_v5.csv")
-```
-
 ##Schedule Factors
 Building Team Level Schedule
 ```{r}
@@ -691,12 +666,6 @@ Rebuild Modern
 games_master_modern <- games_master %>%
   filter(!is.na(home_off_rtg)) %>%
   filter(!is.na(home_efg_pct))
-```
-
-Save
-```{r}
-write_csv(games_master, "master_dataset_v6.csv")
-write_csv(games_master_modern, "master_dataset_modern_v6.csv")
 ```
 
 Verify
@@ -802,12 +771,6 @@ Rebuild Modern
 games_master_modern <- games_master %>%
   filter(!is.na(home_off_rtg)) %>%
   filter(!is.na(home_efg_pct))
-```
-
-Save
-```{r}
-write_csv(games_master, "master_dataset_v7.csv")
-write_csv(games_master_modern, "master_dataset_modern_v7.csv")
 ```
 
 
@@ -918,16 +881,11 @@ model_data <- games_master_modern %>%
   drop_na(spread, total)
 ```
 
-Final Save
-```{r}
-write_csv(model_data, "FINAL_CLEANED_SET.csv")
-```
-
 ##Additional Fixes
 
 Loading
 ```{r}
-model_data_v2 <- read_csv("FINAL_CLEANED_SET.csv", show_col_types = FALSE)
+model_data_v2 <- model_data
 ```
 
 Inspecting Month Distribution
@@ -989,6 +947,7 @@ model_data_v2 <- model_data_v2 %>%
 
 Save
 ```{r}
-write_csv(model_data_v2, "FINAL_MODEL_READY.csv")
+write_csv(model_data_v2, "../Data/FINAL_MODEL_READY..csv")
 ```
+
 
