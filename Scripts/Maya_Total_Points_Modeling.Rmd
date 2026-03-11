@@ -2,13 +2,12 @@
 title: "NBA Total Points Prediction: Predictive Modeling"
 author: "Maya Lennon"
 date: "`r Sys.Date()`"
-output:
-  html_document
+output: pdf_document
 ---
 #
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
 ```
 
 ## Library Loading
@@ -21,6 +20,7 @@ library(ggplot2)
 library(caret)
 library(glmnet)
 library(rpart)
+library(car)
 library(rpart.plot)
 library(randomForest)
 library(gbm)
@@ -29,10 +29,13 @@ library(Metrics)
 library(tibble)
 library(lubridate)
 library(purrr)
+library(e1071)
+library(rprojroot)
+library(corrplot)
 ```
 
 ```{r}
-model_ready <- read_csv("FINAL_MODEL_READY.csv", show_col_types = FALSE) |>
+model_ready <- read_csv("Data/FINAL_MODEL_READY.csv", show_col_types = FALSE) |>
   filter(game_date >= as.Date("2013-10-01"))
 
 cat("Total rows:", nrow(model_ready), "\n")
@@ -84,10 +87,6 @@ cat("Test set:    ", nrow(test),  "games (",
     as.character(min(test$game_date)),  "to",
     as.character(max(test$game_date)),  ")\n")
 ```
-```{r}
-library(corrplot)
-```
-
 ## Feature matrix
 
 ```{r}
@@ -127,10 +126,13 @@ cor_with_total <- sapply(numeric_data, function(x)
 
 sort(abs(cor_with_total), decreasing = TRUE)
 
+vif_vars <- setdiff(names(numeric_data),
+                    c("three_point_env5", "free_throw_env5", "tov_env5"))
+
 lm_test <- lm(
   total ~ .,
   data = model_ready |>
-    select(total, all_of(names(numeric_data)))
+    select(total, all_of(vif_vars))
 )
 
 vif(lm_test)
@@ -183,14 +185,16 @@ o l s l o l
 ### Full Model 1
 
 ```{r}
-lm_full <- lm(total ~ ., data = cbind(total = y_train, X_train))
-lm_full_pred <- predict(lm_full, newdata = X_test)
+xvars_full <- setdiff(names(X_train),
+                      c("three_point_env5", "free_throw_env5", "tov_env5"))
+
+lm_full <- lm(total ~ ., data = cbind(total = y_train, X_train[, xvars_full]))
+lm_full_pred <- predict(lm_full, newdata = X_test[, xvars_full])
 lm_full_mae  <- mae_raw(y_test, lm_full_pred)
 
 cat("OLS Full Model — Test MAE:", round(lm_full_mae, 2), "\n")
 cat("R-squared (training):", round(summary(lm_full)$r.squared, 4), "\n")
 
-# Check for high VIF (multicollinearity)
 if (requireNamespace("car", quietly = TRUE)) {
   vif_vals <- car::vif(lm_full)
   cat("\nPredictors with VIF > 10 (multicollinearity concern):\n")
@@ -203,15 +207,20 @@ if (requireNamespace("car", quietly = TRUE)) {
 pruned_vars <- c(
   "blend_total_proj5",
   "pace_pressure5",
-  "three_point_env5",
-  "free_throw_env5",
-  "tov_env5",
   "shooting_env5",
-  "over230_env10",
-  "rest_diff_capped",
-  "any_back_to_back",
-  "is_playoff",
-  "recent_total_volatility"
+  "spread",
+  "oreb",
+  "rest_diff",
+  "home_back_to_back",
+  "away_back_to_back",
+  "last5_pts_diff",
+  "last5_pts_allowed_diff",
+  "last5_oreb_diff",
+  "opp_pts_allowed_diff",
+  "opp_orb_allowed_diff",
+  "opp_trb_allowed_diff",
+  "opp_ast_allowed_diff",
+  "opp_tov_forced_diff"
 )
 
 lm_pruned <- lm(total ~ .,
@@ -241,39 +250,31 @@ cat("OLS Log-Transformed — Test MAE (back-transformed):", round(lm_log_mae, 2)
 
 ## Model 2: Polynomial Regression
 ```{r}
-poly_vars_linear <- setdiff(pruned_vars, c("blend_total_proj5", "pace_pressure5",
-                                            "three_point_env5", "tov_env5",
-                                            "shooting_env5"))
+poly_vars_linear <- setdiff(
+  pruned_vars,
+  c("blend_total_proj5", "pace_pressure5", "shooting_env5")
+)
 
 train_poly <- cbind(
-  total               = y_train,
-  X_train[, poly_vars_linear],
+  total = y_train,
+  X_train[, poly_vars_linear, drop = FALSE],
   poly(X_train$blend_total_proj5, 2, raw = TRUE) |>
     as.data.frame() |> setNames(c("blend5_d1", "blend5_d2")),
-  poly(X_train$pace_pressure5,    2, raw = TRUE) |>
-    as.data.frame() |> setNames(c("pace5_d1",  "pace5_d2")),
-  poly(X_train$three_point_env5,  2, raw = TRUE) |>
-    as.data.frame() |> setNames(c("tp5_d1",    "tp5_d2")),
-  poly(X_train$tov_env5,          2, raw = TRUE) |>
-    as.data.frame() |> setNames(c("tov5_d1",   "tov5_d2")),
-  poly(X_train$shooting_env5,     2, raw = TRUE) |>
+  poly(X_train$pace_pressure5, 2, raw = TRUE) |>
+    as.data.frame() |> setNames(c("pace5_d1", "pace5_d2")),
+  poly(X_train$shooting_env5, 2, raw = TRUE) |>
     as.data.frame() |> setNames(c("shoot5_d1", "shoot5_d2"))
 )
 
 test_poly <- cbind(
-  X_test[, poly_vars_linear],
+  X_test[, poly_vars_linear, drop = FALSE],
   poly(X_test$blend_total_proj5, 2, raw = TRUE) |>
     as.data.frame() |> setNames(c("blend5_d1", "blend5_d2")),
-  poly(X_test$pace_pressure5,    2, raw = TRUE) |>
-    as.data.frame() |> setNames(c("pace5_d1",  "pace5_d2")),
-  poly(X_test$three_point_env5,  2, raw = TRUE) |>
-    as.data.frame() |> setNames(c("tp5_d1",    "tp5_d2")),
-  poly(X_test$tov_env5,          2, raw = TRUE) |>
-    as.data.frame() |> setNames(c("tov5_d1",   "tov5_d2")),
-  poly(X_test$shooting_env5,     2, raw = TRUE) |>
+  poly(X_test$pace_pressure5, 2, raw = TRUE) |>
+    as.data.frame() |> setNames(c("pace5_d1", "pace5_d2")),
+  poly(X_test$shooting_env5, 2, raw = TRUE) |>
     as.data.frame() |> setNames(c("shoot5_d1", "shoot5_d2"))
 )
-
 lm_poly <- lm(total ~ ., data = train_poly)
 lm_poly_pred <- predict(lm_poly, newdata = test_poly)
 lm_poly_mae  <- mae_raw(y_test, lm_poly_pred)

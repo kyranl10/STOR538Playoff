@@ -6,7 +6,7 @@ output: pdf_document
 ---
 ##Initial Cleaning
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
 ```
 
 Load Packages
@@ -21,8 +21,8 @@ library(tidyr)
 
 Read Raw Data
 ```{r}
-games <- read_csv("../Data/Games.csv", show_col_types = FALSE)
-opp_pg <- read_csv("../Data/Opponent Stats Per Game.csv", show_col_types = FALSE)
+games <- read_csv("Data/Games.csv", show_col_types = FALSE)
+opp_pg <- read_csv("Data/Opponent Stats Per Game.csv", show_col_types = FALSE)
 ```
 
 Inspect Column Names
@@ -168,7 +168,7 @@ games_master_modern %>%
 ##Creating OREB
 
 ```{r}
-team_stats <- read_csv("../Data/TeamStatistics.csv", show_col_types = FALSE)
+team_stats <- read_csv("Data/TeamStatistics.csv", show_col_types = FALSE)
 ```
 
 ```{r}
@@ -246,7 +246,7 @@ games_master_modern <- games_master %>%
 
 Advanced Team File
 ```{r}
-team_adv <- read_csv("../Data/TeamStatisticsAdvanced.csv", show_col_types = FALSE)
+team_adv <- read_csv("Data/TeamStatisticsAdvanced.csv", show_col_types = FALSE)
 names(team_adv)
 head(team_adv)
 ```
@@ -363,7 +363,7 @@ games_master %>%
 
 Loading Dataset
 ```{r}
-team_ff <- read_csv("../Data/TeamStatisticsFourFactors.csv", show_col_types = FALSE)
+team_ff <- read_csv("Data/TeamStatisticsFourFactors.csv", show_col_types = FALSE)
 ```
 
 Inspecting Columns
@@ -809,30 +809,25 @@ library(slider)
 
 games_master_modern <- games_master_modern %>%
   group_by(home_team) %>%
+  arrange(date, game_id, .by_group = TRUE) %>%
   mutate(
-
     shooting_env5 =
-      slide_dbl(lag(home_pts), mean, .before = 4, .complete = TRUE),
+      slide_dbl(lag(home_efg_pct), mean, .before = 4, .complete = TRUE),
 
     pace_pressure5 =
-      slide_dbl(lag(total), mean, .before = 4, .complete = TRUE),
-
-    three_point_env5 =
-      slide_dbl(lag(home_pts), mean, .before = 4, .complete = TRUE),
+      slide_dbl(lag(home_pace), mean, .before = 4, .complete = TRUE),
 
     free_throw_env5 =
-      slide_dbl(lag(home_pts), mean, .before = 4, .complete = TRUE),
+      slide_dbl(lag(home_ft_rate), mean, .before = 4, .complete = TRUE),
 
     tov_env5 =
-      slide_dbl(lag(home_pts), mean, .before = 4, .complete = TRUE),
+      slide_dbl(lag(home_tov_pct), mean, .before = 4, .complete = TRUE),
 
     blend_total_proj5 =
       (shooting_env5 +
        pace_pressure5 +
-       three_point_env5 +
        free_throw_env5 +
-       tov_env5) / 5
-
+       tov_env5) / 4
   ) %>%
   ungroup()
 ```
@@ -868,7 +863,6 @@ model_data <- games_master_modern %>%
     # Maya variables
     shooting_env5,
     pace_pressure5,
-    three_point_env5,
     free_throw_env5,
     tov_env5,
     blend_total_proj5
@@ -947,7 +941,7 @@ model_data_v2 <- model_data_v2 %>%
 
 Save
 ```{r}
-write_csv(model_data_v2, "../Data/FINAL_MODEL_READY..csv")
+write_csv(model_data_v2, "Data/FINAL_MODEL_READY.csv")
 ```
 
 
