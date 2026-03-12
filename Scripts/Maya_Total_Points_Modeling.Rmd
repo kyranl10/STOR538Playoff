@@ -40,21 +40,9 @@ model_ready <- read_csv("Data/FINAL_MODEL_READY.csv", show_col_types = FALSE) |>
   filter(
     game_date >= as.Date("2013-10-01"),
     month(game_date) %in% c(10, 11, 12, 1, 2, 3, 4)
-  ) |>
-  select(-off_rtg_diff,
-         -def_rtg_diff,
-         -net_rtg_diff,
-         -efg_pct_diff,
-         -tov_pct_diff,
-         -orb_pct_diff,
-         -ft_rate_diff,
-         -last5_off_rtg_diff,
-         -last5_def_rtg_diff,
-         -last5_net_rtg_diff,
-         -last5_pace_diff,
-         -season
-         )
+  )
 
+cat("Duplicate game_ids:", sum(duplicated(model_ready$game_id)), "\n")
 cat("Total rows:", nrow(model_ready), "\n")
 cat("Date range:", as.character(min(model_ready$game_date)),
     "to", as.character(max(model_ready$game_date)), "\n")
@@ -107,11 +95,11 @@ cat("Test set:    ", nrow(test),  "games (",
 ## Feature matrix
 
 ```{r}
-id_cols <- c("game_id", "game_date", "home_team", "away_team", "total", "oreb")
+id_cols <- c("game_id", "game_date", "home_team", "away_team", "total", "oreb", "spread")
 
 numeric_data <- model_ready |>
   select(where(is.numeric)) |>
-  select(-any_of(c("game_id", "total", "oreb")))
+  select(-any_of(c("game_id", "total", "oreb","spread")))
 
 # remove zero-variance columns first
 zero_var <- names(numeric_data)[sapply(
@@ -167,40 +155,44 @@ lm_test_vif <- lm(
 cat("VIF values:\n")
 print(car::vif(lm_test_vif))
 
-# final predictor set for modeling
-feat_cols <- setdiff(names(model_ready), id_cols)
+# OLS-friendly feature set
+feat_cols_ols <- setdiff(names(model_ready), id_cols)
 
-# drop collinear / redundant vars from actual models too
-feat_drop <- c(
-  "blend_total_proj5",
+feat_drop_ols <- c(
   "rebound_matchup_edge",
   "orb_pg_diff",
   "drb_pg_diff",
   "trb_pg_diff",
   "x3pa_rate_pg_diff",
-  "shooting_env5",
-  "pace_pressure5",
-  "free_throw_env5",
-  "tov_env5",
-  "pace_rebound_pressure"
+  "orb_per100_diff",
+  "drb_per100_diff",
+  "trb_per100_diff",
+  "net_rtg_diff",
+  "last5_net_rtg_diff",
+  "blend_total_proj5"
 )
 
-feat_cols <- setdiff(feat_cols, feat_drop)
+feat_cols_ols <- setdiff(feat_cols_ols, feat_drop_ols)
 
-cat("Number of predictors:", length(feat_cols), "\n")
-cat("Predictors:\n")
-print(feat_cols)
+# richer tree-model feature set
+feat_cols_gbm <- setdiff(names(model_ready), id_cols)
 
-X_train <- train[, feat_cols, drop = FALSE]
+cat("Number of OLS predictors:", length(feat_cols_ols), "\n")
+cat("Number of GBM predictors:", length(feat_cols_gbm), "\n")
+
+X_train_ols <- train[, feat_cols_ols, drop = FALSE]
+X_test_ols  <- test[, feat_cols_ols, drop = FALSE]
+
+X_train_gbm <- train[, feat_cols_gbm, drop = FALSE]
+X_test_gbm  <- test[, feat_cols_gbm, drop = FALSE]
+
 y_train <- train$total
-
-X_test  <- test[, feat_cols, drop = FALSE]
 y_test  <- test$total
 
 y_train_log <- log(y_train)
 y_test_log  <- log(y_test)
 
-na_counts <- colSums(is.na(X_train))
+na_counts <- colSums(is.na(X_train_ols))
 if (any(na_counts > 0)) {
   cat("WARNING — NAs in training features:\n")
   print(na_counts[na_counts > 0])
@@ -208,11 +200,11 @@ if (any(na_counts > 0)) {
   cat("No NAs in training feature matrix.\n")
 }
 
-cor_matrix <- cor(X_train |> select(where(is.numeric)), use = "complete.obs")
+cor_matrix <- cor(X_train_ols |> select(where(is.numeric)), use = "complete.obs")
 corrplot(cor_matrix, method = "color", type = "upper")
 
 cor_with_total <- sapply(
-  X_train |> select(where(is.numeric)),
+  X_train_ols |> select(where(is.numeric)),
   function(x) cor(y_train, x, use = "complete.obs")
 )
 
@@ -266,17 +258,25 @@ o l s l o l
 ### Full Model 1
 
 ```{r}
-lm_full <- lm(total ~ ., data = cbind(total = y_train, X_train))
-lm_full_pred <- predict(lm_full, newdata = X_test)
+lm_full <- lm(total ~ ., data = cbind(total = y_train, X_train_ols))
+lm_full_pred <- predict(lm_full, newdata = X_test_ols)
 lm_full_mae <- mae_raw(y_test, lm_full_pred)
 
 cat("OLS Full Model — Test MAE:", round(lm_full_mae, 2), "\n")
 cat("R-squared (training):", round(summary(lm_full)$r.squared, 4), "\n")
 
 if (requireNamespace("car", quietly = TRUE)) {
-  vif_vals <- car::vif(lm_full)
-  cat("\nPredictors with VIF > 10 (multicollinearity concern):\n")
-  print(vif_vals[vif_vals > 10])
+  aliased_full <- alias(lm_full)$Complete
+  
+  if (!is.null(aliased_full)) {
+    cat("\nAliased coefficients detected in full OLS model.\n")
+    cat("VIF cannot be computed until redundant predictors are removed.\n")
+    print(aliased_full)
+  } else {
+    vif_vals <- car::vif(lm_full)
+    cat("\nPredictors with VIF > 10 (multicollinearity concern):\n")
+    print(vif_vals[vif_vals > 10])
+  }
 }
 
 ```
@@ -284,36 +284,35 @@ if (requireNamespace("car", quietly = TRUE)) {
 ### Pruned OLS Model 1
 ```{r}
 pruned_vars <- c(
-  "spread",
+  "season",
   "rest_diff",
   "home_back_to_back",
   "away_back_to_back",
   "last5_pts_diff",
   "last5_pts_allowed_diff",
-  "last5_oreb_diff",
-  "opp_pts_allowed_diff",
-  "opp_orb_allowed_diff",
-  "opp_trb_allowed_diff",
-  "opp_ast_allowed_diff",
-  "opp_tov_forced_diff",
-  "expected_oreb_pressure",
-  "last5_missed_fg_diff",
-  "last10_oreb_diff",
-  "last5_oreb_allowed_diff",
-  "orb_per100_diff",
-  "drb_per100_diff",
-  "trb_per100_diff",
-  "x3pa_rate_per100_diff"
+  "off_rtg_diff",
+  "def_rtg_diff",
+  "efg_pct_diff",
+  "ft_rate_diff",
+  "tov_pct_diff",
+  "last5_off_rtg_diff",
+  "last5_def_rtg_diff",
+  "blend_total_proj5",
+  "shooting_env5",
+  "pace_pressure5",
+  "free_throw_env5",
+  "tov_env5",
+  "expected_missed_fg"
 )
 
-pruned_vars <- pruned_vars[pruned_vars %in% names(X_train)]
+pruned_vars <- pruned_vars[pruned_vars %in% names(X_train_ols)]
 
 lm_pruned <- lm(
   total ~ .,
-  data = cbind(total = y_train, X_train[, pruned_vars, drop = FALSE])
+  data = cbind(total = y_train, X_train_ols[, pruned_vars, drop = FALSE])
 )
 
-lm_pruned_pred <- predict(lm_pruned, newdata = X_test[, pruned_vars, drop = FALSE])
+lm_pruned_pred <- predict(lm_pruned, newdata = X_test_ols[, pruned_vars, drop = FALSE])
 lm_pruned_mae  <- mae_raw(y_test, lm_pruned_pred)
 
 cat("OLS Pruned Model — Test MAE:", round(lm_pruned_mae, 2), "\n")
@@ -325,10 +324,10 @@ print(summary(lm_pruned))
 ```{r}
 lm_log <- lm(
   log(total) ~ .,
-  data = cbind(total = y_train, X_train[, pruned_vars, drop = FALSE])
+  data = cbind(total = y_train, X_train_ols[, pruned_vars, drop = FALSE])
 )
 
-lm_log_pred_log <- predict(lm_log, newdata = X_test[, pruned_vars, drop = FALSE])
+lm_log_pred_log <- predict(lm_log, newdata = X_test_ols[, pruned_vars, drop = FALSE])
 lm_log_pred_raw <- exp(lm_log_pred_log)
 lm_log_mae      <- mae_raw(y_test, lm_log_pred_raw)
 
@@ -342,50 +341,50 @@ cat("OLS Log-Transformed — Test MAE (back-transformed):", round(lm_log_mae, 2)
 ```{r}
 poly_base_vars <- intersect(
   c(
-    "spread",
+    "season",
     "rest_diff",
     "last5_pts_diff",
     "last5_pts_allowed_diff",
-    "last5_oreb_diff",
-    "opp_pts_allowed_diff",
-    "opp_orb_allowed_diff",
-    "expected_oreb_pressure",
-    "last5_missed_fg_diff",
-    "last5_oreb_allowed_diff"
+    "off_rtg_diff",
+    "def_rtg_diff",
+    "efg_pct_diff",
+    "expected_missed_fg",
+    "blend_total_proj5",
+    "pace_pressure5"
   ),
-  names(X_train)
+  names(X_train_ols)
 )
 
 poly_terms <- intersect(
-  c("expected_oreb_pressure", "last5_pts_diff", "last5_pts_allowed_diff"),
-  names(X_train)
+  c("expected_missed_fg", "last5_pts_diff", "last5_pts_allowed_diff"),
+  names(X_train_ols)
 )
 
-train_poly <- cbind(total = y_train, X_train[, poly_base_vars, drop = FALSE])
-test_poly  <- X_test[, poly_base_vars, drop = FALSE]
+train_poly <- cbind(total = y_train, X_train_ols[, poly_base_vars, drop = FALSE])
+test_poly  <- X_test_ols[, poly_base_vars, drop = FALSE]
 
-if ("expected_oreb_pressure" %in% poly_terms) {
+if ("expected_missed_fg" %in% poly_terms) {
   train_poly <- cbind(
     train_poly,
-    poly(X_train$expected_oreb_pressure, 2, raw = TRUE) |>
-      as.data.frame() |> setNames(c("orebpress_d1", "orebpress_d2"))
+    poly(X_train_ols$expected_missed_fg, 2, raw = TRUE) |>
+      as.data.frame() |> setNames(c("missfg_d1", "missfg_d2"))
   )
   test_poly <- cbind(
     test_poly,
-    poly(X_test$expected_oreb_pressure, 2, raw = TRUE) |>
-      as.data.frame() |> setNames(c("orebpress_d1", "orebpress_d2"))
+    poly(X_test_ols$expected_missed_fg, 2, raw = TRUE) |>
+      as.data.frame() |> setNames(c("missfg_d1", "missfg_d2"))
   )
 }
 
 if ("last5_pts_diff" %in% poly_terms) {
   train_poly <- cbind(
     train_poly,
-    poly(X_train$last5_pts_diff, 2, raw = TRUE) |>
+    poly(X_train_ols$last5_pts_diff, 2, raw = TRUE) |>
       as.data.frame() |> setNames(c("last5pts_d1", "last5pts_d2"))
   )
   test_poly <- cbind(
     test_poly,
-    poly(X_test$last5_pts_diff, 2, raw = TRUE) |>
+    poly(X_test_ols$last5_pts_diff, 2, raw = TRUE) |>
       as.data.frame() |> setNames(c("last5pts_d1", "last5pts_d2"))
   )
 }
@@ -393,12 +392,12 @@ if ("last5_pts_diff" %in% poly_terms) {
 if ("last5_pts_allowed_diff" %in% poly_terms) {
   train_poly <- cbind(
     train_poly,
-    poly(X_train$last5_pts_allowed_diff, 2, raw = TRUE) |>
+    poly(X_train_ols$last5_pts_allowed_diff, 2, raw = TRUE) |>
       as.data.frame() |> setNames(c("last5allow_d1", "last5allow_d2"))
   )
   test_poly <- cbind(
     test_poly,
-    poly(X_test$last5_pts_allowed_diff, 2, raw = TRUE) |>
+    poly(X_test_ols$last5_pts_allowed_diff, 2, raw = TRUE) |>
       as.data.frame() |> setNames(c("last5allow_d1", "last5allow_d2"))
   )
 }
@@ -429,7 +428,7 @@ gbm_grid <- expand.grid(
 
 set.seed(42)
 gbm_tune <- train(
-  x         = as.data.frame(X_train),
+  x         = as.data.frame(X_train_gbm),
   y         = y_train,
   method    = "gbm",
   metric    = "MAE",
@@ -444,8 +443,8 @@ print(best_gbm_params)
 
 # Refit on full training set (raw total)
 set.seed(42)
-gbm_train_df <- as.data.frame(cbind(total = y_train, X_train))
-gbm_test_df  <- as.data.frame(X_test)
+gbm_train_df <- as.data.frame(cbind(total = y_train, X_train_gbm))
+gbm_test_df  <- as.data.frame(X_test_gbm)
 
 gbm_final <- gbm(
   formula           = total ~ .,
@@ -491,8 +490,8 @@ barplot(
 
 # Log-scale GBM
 set.seed(42)
-gbm_log_train_df <- as.data.frame(cbind(total_log = y_train_log, X_train))
-gbm_log_test_df  <- as.data.frame(X_test)
+gbm_log_train_df <- as.data.frame(cbind(total_log = y_train_log, X_train_gbm))
+gbm_log_test_df  <- as.data.frame(X_test_gbm)
 
 gbm_log_final <- gbm(
   formula           = total_log ~ .,
