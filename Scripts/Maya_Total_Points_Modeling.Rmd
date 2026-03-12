@@ -40,7 +40,20 @@ model_ready <- read_csv("Data/FINAL_MODEL_READY.csv", show_col_types = FALSE) |>
   filter(
     game_date >= as.Date("2013-10-01"),
     month(game_date) %in% c(10, 11, 12, 1, 2, 3, 4)
-  )
+  ) |>
+  select(-off_rtg_diff,
+         -def_rtg_diff,
+         -net_rtg_diff,
+         -efg_pct_diff,
+         -tov_pct_diff,
+         -orb_pct_diff,
+         -ft_rate_diff,
+         -last5_off_rtg_diff,
+         -last5_def_rtg_diff,
+         -last5_net_rtg_diff,
+         -last5_pace_diff,
+         -season
+         )
 
 cat("Total rows:", nrow(model_ready), "\n")
 cat("Date range:", as.character(min(model_ready$game_date)),

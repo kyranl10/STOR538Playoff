@@ -20,6 +20,14 @@ library(tidyr)
 library(slider)
 ```
 
+```{r}
+pick_col <- function(df, candidates) {
+  nms <- names(df)
+  hit <- nms[tolower(nms) %in% tolower(candidates)]
+  if (length(hit) == 0) return(NA_character_)
+  hit[1]
+}
+```
 Read Raw Data
 ```{r}
 games <- read_csv("Data/Games.csv", show_col_types = FALSE)
@@ -175,6 +183,204 @@ team_stats <- read_csv("Data/TeamStatistics.csv", show_col_types = FALSE)
 ```{r}
 names(team_stats)
 ```
+```{r}
+## ------------------------------------------------------------
+## ENGINEER LEVIN VARIABLES FROM TEAM BOX SCORE DATA
+## ------------------------------------------------------------
+
+team_box <- team_stats %>%
+  transmute(
+    game_id = as.character(gameId),
+    team = teamName,
+    home = home,
+
+    pts = teamScore,
+    fgm = fieldGoalsMade,
+    fga = fieldGoalsAttempted,
+    x3pm = threePointersMade,
+    x3pa = threePointersAttempted,
+    ftm = freeThrowsMade,
+    fta = freeThrowsAttempted,
+    oreb = reboundsOffensive,
+    dreb = reboundsDefensive,
+    tov = turnovers
+  )
+
+## --------------------------
+## Compute base efficiencies
+## --------------------------
+
+team_box <- team_box %>%
+  mutate(
+
+    # Effective FG%
+    efg_pct = (fgm + 0.5 * x3pm) / fga,
+
+    # FT rate
+    ft_rate = fta / fga,
+
+    # Turnover %
+    tov_pct = tov / (fga + 0.44 * fta + tov),
+
+    # Possessions estimate
+    possessions =
+      fga -
+      oreb +
+      tov +
+      0.44 * fta
+  )
+
+## --------------------------
+## Join opponent stats
+## --------------------------
+
+opp_lookup <- team_box %>%
+  select(game_id, team, pts, possessions, dreb)
+
+team_box <- team_box %>%
+  inner_join(
+    opp_lookup,
+    by = "game_id",
+    suffix = c("", "_opp")
+  ) %>%
+  filter(team != team_opp)
+
+## --------------------------
+## Defensive stats
+## --------------------------
+
+team_box <- team_box %>%
+  mutate(
+
+    # Offensive rating
+    off_rtg = 100 * pts / possessions,
+
+    # Defensive rating
+    def_rtg = 100 * pts_opp / possessions_opp,
+
+    # Net rating
+    net_rtg = off_rtg - def_rtg,
+
+    # Pace estimate
+    pace = (possessions + possessions_opp) / 2,
+
+    # Offensive rebound %
+    orb_pct = oreb / (oreb + dreb_opp)
+  )
+
+## --------------------------
+## Rolling Levin metrics
+## --------------------------
+
+games_master <- games_master %>%
+  mutate(game_id = as.character(game_id))
+
+team_box <- team_box %>%
+  left_join(
+    games_master %>%
+      select(game_id, date),
+    by = "game_id"
+  ) %>%
+  mutate(date = as.Date(date)) %>%
+  arrange(team, date)
+
+team_box <- team_box %>%
+  group_by(team) %>%
+  arrange(date, game_id, .by_group = TRUE) %>%
+  mutate(
+
+    last5_off_rtg =
+      zoo::rollapply(lag(off_rtg), 5, mean, fill = NA, align = "right"),
+
+    last5_def_rtg =
+      zoo::rollapply(lag(def_rtg), 5, mean, fill = NA, align = "right"),
+
+    last5_net_rtg =
+      zoo::rollapply(lag(net_rtg), 5, mean, fill = NA, align = "right"),
+
+    last5_pace =
+      zoo::rollapply(lag(pace), 5, mean, fill = NA, align = "right")
+
+  ) %>%
+  ungroup()
+
+## --------------------------
+## Split home / away
+## --------------------------
+
+home_levin <- team_box %>%
+  filter(home == 1) %>%
+  select(
+    game_id,
+    home_team = team,
+    home_off_rtg = off_rtg,
+    home_def_rtg = def_rtg,
+    home_net_rtg = net_rtg,
+    home_pace = pace,
+    home_efg_pct = efg_pct,
+    home_tov_pct = tov_pct,
+    home_orb_pct = orb_pct,
+    home_ft_rate = ft_rate,
+    home_last5_off_rtg = last5_off_rtg,
+    home_last5_def_rtg = last5_def_rtg,
+    home_last5_net_rtg = last5_net_rtg,
+    home_last5_pace = last5_pace
+  ) %>%
+  distinct(game_id, home_team, .keep_all = TRUE)
+
+away_levin <- team_box %>%
+  filter(home == 0) %>%
+  select(
+    game_id,
+    away_team = team,
+    away_off_rtg = off_rtg,
+    away_def_rtg = def_rtg,
+    away_net_rtg = net_rtg,
+    away_pace = pace,
+    away_efg_pct = efg_pct,
+    away_tov_pct = tov_pct,
+    away_orb_pct = orb_pct,
+    away_ft_rate = ft_rate,
+    away_last5_off_rtg = last5_off_rtg,
+    away_last5_def_rtg = last5_def_rtg,
+    away_last5_net_rtg = last5_net_rtg,
+    away_last5_pace = last5_pace
+  ) %>%
+  distinct(game_id, away_team, .keep_all = TRUE)
+
+## --------------------------
+## Join into games_master
+## --------------------------
+
+games_master <- games_master %>%
+  left_join(home_levin, by = c("game_id", "home_team")) %>%
+  left_join(away_levin, by = c("game_id", "away_team")) %>%
+  mutate(
+
+    off_rtg_diff = home_off_rtg - away_off_rtg,
+    def_rtg_diff = home_def_rtg - away_def_rtg,
+    net_rtg_diff = home_net_rtg - away_net_rtg,
+    pace_diff = home_pace - away_pace,
+
+    efg_pct_diff = home_efg_pct - away_efg_pct,
+    tov_pct_diff = home_tov_pct - away_tov_pct,
+    orb_pct_diff = home_orb_pct - away_orb_pct,
+    ft_rate_diff = home_ft_rate - away_ft_rate,
+
+    last5_off_rtg_diff =
+      home_last5_off_rtg - away_last5_off_rtg,
+
+    last5_def_rtg_diff =
+      home_last5_def_rtg - away_last5_def_rtg,
+
+    last5_net_rtg_diff =
+      home_last5_net_rtg - away_last5_net_rtg,
+
+    last5_pace_diff =
+      home_last5_pace - away_last5_pace
+  )
+```
+
 Building Offensive Rebound Dataset
 ```{r}
 oreb_game <- team_stats %>%
@@ -242,233 +448,6 @@ games_master_modern <- games_master %>%
   filter(season >= 2010)
 ```
 
-
-##Adding Advanced Team Stats
-
-Advanced Team File
-```{r}
-team_adv <- read_csv("Data/TeamStatisticsAdvanced.csv", show_col_types = FALSE)
-names(team_adv)
-head(team_adv)
-```
-
-Column-Matcher
-```{r}
-## Helper to find likely column names
-
-pick_col <- function(df, candidates) {
-  nms <- names(df)
-  hit <- nms[tolower(nms) %in% tolower(candidates)]
-  if (length(hit) == 0) return(NA_character_)
-  hit[1]
-}
-```
-
-Identify Important Columns
-```{r}
-## Identify advanced-stat columns
-
-game_id_col <- pick_col(team_adv, c("gameId"))
-home_col    <- pick_col(team_adv, c("home"))
-
-off_col  <- pick_col(team_adv, c("offensiveRating", "offRating", "off_rtg"))
-def_col  <- pick_col(team_adv, c("defensiveRating", "defRating", "def_rtg"))
-net_col  <- pick_col(team_adv, c("netRating", "net_rtg"))
-pace_col <- pick_col(team_adv, c("pace"))
-
-game_id_col
-home_col
-off_col
-def_col
-net_col
-pace_col
-```
-
-Game_ids cleaning
-```{r}
-games_master <- games_master %>%
-  mutate(game_id = as.character(game_id))
-
-team_adv_small <- team_adv %>%
-  transmute(
-    game_id = as.character(.data[[game_id_col]]),
-    home    = .data[[home_col]],
-    off_rtg = .data[[off_col]],
-    def_rtg = .data[[def_col]],
-    net_rtg = .data[[net_col]],
-    pace    = .data[[pace_col]]
-  )
-```
-
-Splitting Home vs. Away
-```{r}
-home_adv <- team_adv_small %>%
-  filter(home == 1) %>%
-  select(
-    game_id,
-    home_off_rtg = off_rtg,
-    home_def_rtg = def_rtg,
-    home_net_rtg = net_rtg,
-    home_pace    = pace
-  ) %>%
-  distinct(game_id, .keep_all = TRUE)
-
-away_adv <- team_adv_small %>%
-  filter(home == 0) %>%
-  select(
-    game_id,
-    away_off_rtg = off_rtg,
-    away_def_rtg = def_rtg,
-    away_net_rtg = net_rtg,
-    away_pace    = pace
-  ) %>%
-  distinct(game_id, .keep_all = TRUE)
-```
-
-Rejoining
-```{r}
-games_master <- games_master %>%
-  left_join(home_adv, by = "game_id") %>%
-  left_join(away_adv, by = "game_id") %>%
-  mutate(
-    off_rtg_diff = home_off_rtg - away_off_rtg,
-    def_rtg_diff = home_def_rtg - away_def_rtg,
-    net_rtg_diff = home_net_rtg - away_net_rtg,
-    pace_diff    = home_pace - away_pace
-  )
-```
-
-IDs Check
-```{r}
-class(games_master$game_id)
-class(team_adv_small$game_id)
-
-length(intersect(games_master$game_id, team_adv_small$game_id))
-sum(games_master$game_id %in% team_adv_small$game_id)
-```
-
-viewing master
-```{r}
-games_master %>%
-  filter(!is.na(home_off_rtg)) %>%
-  select(
-    game_id, home_team, away_team,
-    home_off_rtg, away_off_rtg, off_rtg_diff,
-    home_def_rtg, away_def_rtg, def_rtg_diff,
-    home_net_rtg, away_net_rtg, net_rtg_diff,
-    home_pace, away_pace, pace_diff
-  ) %>%
-  head(20)
-```
-##Adding Four Factors
-
-Loading Dataset
-```{r}
-team_ff <- read_csv("Data/TeamStatisticsFourFactors.csv", show_col_types = FALSE)
-```
-
-Inspecting Columns
-```{r}
-names(team_ff)
-head(team_ff)
-```
-
-Identifying Columns
-```{r}
-ff_game_id_col <- pick_col(team_ff, c("gameId"))
-ff_home_col    <- pick_col(team_ff, c("home"))
-
-efg_col <- pick_col(team_ff, c("efgPct"))
-tov_col <- pick_col(team_ff, c("tmTOVPct"))
-orb_col <- pick_col(team_ff, c("orebPct"))
-ftr_col <- pick_col(team_ff, c("ftaRate"))
-
-ff_game_id_col
-ff_home_col
-efg_col
-tov_col
-orb_col
-ftr_col
-```
-Building Reduced Table
-```{r}
-team_ff_small <- team_ff %>%
-  transmute(
-    game_id = as.character(.data[[ff_game_id_col]]),
-    home    = .data[[ff_home_col]],
-    efg_pct = .data[[efg_col]],
-    tov_pct = .data[[tov_col]],
-    orb_pct = .data[[orb_col]],
-    ft_rate = .data[[ftr_col]]
-  )
-```
-
-Splitting Into Home and Away
-```{r}
-home_ff <- team_ff_small %>%
-  filter(home == 1) %>%
-  select(
-    game_id,
-    home_efg_pct = efg_pct,
-    home_tov_pct = tov_pct,
-    home_orb_pct = orb_pct,
-    home_ft_rate = ft_rate
-  ) %>%
-  distinct(game_id, .keep_all = TRUE)
-
-away_ff <- team_ff_small %>%
-  filter(home == 0) %>%
-  select(
-    game_id,
-    away_efg_pct = efg_pct,
-    away_tov_pct = tov_pct,
-    away_orb_pct = orb_pct,
-    away_ft_rate = ft_rate
-  ) %>%
-  distinct(game_id, .keep_all = TRUE)
-```
-
-Join onto master
-```{r}
-games_master <- games_master %>%
-  mutate(game_id = as.character(game_id)) %>%
-  left_join(home_ff, by = "game_id") %>%
-  left_join(away_ff, by = "game_id") %>%
-  mutate(
-    efg_pct_diff = home_efg_pct - away_efg_pct,
-    tov_pct_diff = home_tov_pct - away_tov_pct,
-    orb_pct_diff = home_orb_pct - away_orb_pct,
-    ft_rate_diff = home_ft_rate - away_ft_rate
-  )
-```
-
-Verifying
-```{r}
-games_master %>%
-  filter(!is.na(home_efg_pct)) %>%
-  select(
-    game_id, home_team, away_team,
-    home_efg_pct, away_efg_pct, efg_pct_diff,
-    home_tov_pct, away_tov_pct, tov_pct_diff,
-    home_orb_pct, away_orb_pct, orb_pct_diff,
-    home_ft_rate, away_ft_rate, ft_rate_diff
-  ) %>%
-  head(20)
-```
-Checking For Overlap
-```{r}
-length(intersect(games_master$game_id, team_ff_small$game_id))
-
-sum(is.na(games_master$home_efg_pct))
-sum(is.na(games_master$away_efg_pct))
-sum(is.na(games_master$efg_pct_diff))
-```
-Filtering
-```{r}
-games_master_modern <- games_master %>%
-  filter(!is.na(home_off_rtg)) %>%
-  filter(!is.na(home_efg_pct))
-```
 
 ##Rolling Averages
 
@@ -586,8 +565,7 @@ games_master %>%
 Rebuild Modern
 ```{r}
 games_master_modern <- games_master %>%
-  filter(!is.na(home_off_rtg)) %>%
-  filter(!is.na(home_efg_pct))
+  filter(season >= 2010)
 ```
 
 ##Schedule Factors
@@ -665,8 +643,7 @@ games_master <- games_master %>%
 Rebuild Modern
 ```{r}
 games_master_modern <- games_master %>%
-  filter(!is.na(home_off_rtg)) %>%
-  filter(!is.na(home_efg_pct))
+  filter(season >= 2010)
 ```
 
 Verify
@@ -684,96 +661,6 @@ games_master %>%
   ) %>%
   head(20)
 ```
-
-##Rolling Team Strength
-
-Team-Level Advanced History
-```{r}
-team_adv_home <- games_master %>%
-  select(
-    game_id,
-    date,
-    team = home_team,
-    off_rtg = home_off_rtg,
-    def_rtg = home_def_rtg,
-    net_rtg = home_net_rtg,
-    pace = home_pace
-  )
-
-team_adv_away <- games_master %>%
-  select(
-    game_id,
-    date,
-    team = away_team,
-    off_rtg = away_off_rtg,
-    def_rtg = away_def_rtg,
-    net_rtg = away_net_rtg,
-    pace = away_pace
-  )
-
-team_adv_games <- bind_rows(team_adv_home, team_adv_away) %>%
-  arrange(team, date)
-```
-
-Computing Rolling Averages
-```{r}
-team_adv_games <- team_adv_games %>%
-  group_by(team) %>%
-  arrange(date, .by_group = TRUE) %>%
-  mutate(
-    last5_off_rtg = zoo::rollapply(lag(off_rtg), 5, mean, fill = NA, align = "right"),
-    last5_def_rtg = zoo::rollapply(lag(def_rtg), 5, mean, fill = NA, align = "right"),
-    last5_net_rtg = zoo::rollapply(lag(net_rtg), 5, mean, fill = NA, align = "right"),
-    last5_pace    = zoo::rollapply(lag(pace), 5, mean, fill = NA, align = "right")
-  ) %>%
-  ungroup()
-```
-
-Split Home vs. Away
-```{r}
-home_recent_adv <- team_adv_games %>%
-  rename(home_team = team) %>%
-  select(
-    game_id,
-    home_team,
-    home_last5_off_rtg = last5_off_rtg,
-    home_last5_def_rtg = last5_def_rtg,
-    home_last5_net_rtg = last5_net_rtg,
-    home_last5_pace = last5_pace
-  )
-
-away_recent_adv <- team_adv_games %>%
-  rename(away_team = team) %>%
-  select(
-    game_id,
-    away_team,
-    away_last5_off_rtg = last5_off_rtg,
-    away_last5_def_rtg = last5_def_rtg,
-    away_last5_net_rtg = last5_net_rtg,
-    away_last5_pace = last5_pace
-  )
-```
-
-Join Onto Master
-```{r}
-games_master <- games_master %>%
-  left_join(home_recent_adv, by = c("game_id", "home_team")) %>%
-  left_join(away_recent_adv, by = c("game_id", "away_team")) %>%
-  mutate(
-    last5_off_rtg_diff = home_last5_off_rtg - away_last5_off_rtg,
-    last5_def_rtg_diff = home_last5_def_rtg - away_last5_def_rtg,
-    last5_net_rtg_diff = home_last5_net_rtg - away_last5_net_rtg,
-    last5_pace_diff = home_last5_pace - away_last5_pace
-  )
-```
-
-Rebuild Modern
-```{r}
-games_master_modern <- games_master %>%
-  filter(!is.na(home_off_rtg)) %>%
-  filter(!is.na(home_efg_pct))
-```
-
 
 ##Fixes
 
@@ -800,6 +687,8 @@ games_master_modern <- games_master %>%
 ```
 
 ##OREB Work
+
+
 
 ##OREB Improvement Features (future-safe)
 
@@ -1195,10 +1084,14 @@ games_master_modern <- games_master_modern %>%
 # 8) Final cleanup
 
 ```{r}
+games_master_modern <- games_master_modern %>%
+  filter(!is.na(home_last5_pts), !is.na(away_last5_pts))
+
 model_data <- games_master_modern %>%
   select(
     game_id,
     date,
+    season,
     home_team,
     away_team,
     spread,
@@ -1210,6 +1103,18 @@ model_data <- games_master_modern %>%
     opp_trb_allowed_diff,
     opp_ast_allowed_diff,
     opp_tov_forced_diff,
+
+    off_rtg_diff,
+    def_rtg_diff,
+    net_rtg_diff,
+    efg_pct_diff,
+    tov_pct_diff,
+    orb_pct_diff,
+    ft_rate_diff,
+    last5_off_rtg_diff,
+    last5_def_rtg_diff,
+    last5_net_rtg_diff,
+    last5_pace_diff,
 
     last5_pts_diff,
     last5_pts_allowed_diff,
