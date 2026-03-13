@@ -1085,9 +1085,19 @@ games_master_modern <- games_master_modern %>%
 
 ```{r}
 games_master_modern <- games_master_modern %>%
-  filter(!is.na(home_last5_pts), !is.na(away_last5_pts))
+  filter(!is.na(home_last5_pts), !is.na(away_last5_pts)) %>%
+  mutate(
+    pace_efficiency = pace_pressure5 * shooting_env5,
+    extra_possession_pressure = expected_oreb_pressure + rebound_matchup_edge,
+    expected_possessions = pace_pressure5 + pace_rebound_pressure,
+    scoring_efficiency = (shooting_env5 + free_throw_env5) / 2
+  )
 
 model_data <- games_master_modern %>%
+  mutate(
+    home_team = coalesce(home_team_full, home_team),
+    away_team = coalesce(away_team_full, away_team)
+  ) %>%
   select(
     game_id,
     date,
@@ -1155,7 +1165,12 @@ model_data <- games_master_modern %>%
     expected_oreb_pressure,
     home_oreb_matchup,
     away_oreb_matchup,
-    pace_rebound_pressure
+    pace_rebound_pressure,
+
+    pace_efficiency,
+    extra_possession_pressure,
+    expected_possessions,
+    scoring_efficiency
   ) %>%
   replace_na(list(
     rest_diff = 0,
